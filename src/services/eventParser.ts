@@ -177,8 +177,7 @@ function parseVaultPayload(
     let payload: VaultEventPayload
     
     switch (eventType) {
-      case 'vault_created':
-        // For vault_created, we expect a more complex object in the event
+      case 'vault_created': {
         payload = {
           vaultId,
           creator: nativeVal.creator || 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
@@ -187,36 +186,37 @@ function parseVaultPayload(
           endTimestamp: nativeVal.end_date ? new Date(nativeVal.end_date * 1000) : new Date(Date.now() + 86400000),
           successDestination: nativeVal.success_destination || 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
           failureDestination: nativeVal.failure_destination || 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-          status: 'active'
+          status: 'active',
         }
-        
-        // Validate vault_created payload
         const createdError = validateVaultCreatedPayload(payload)
         if (createdError) {
           console.error(`Vault created validation error: ${createdError}`)
           return null
         }
+        return payload
       }
 
-      return payload
-
-    case 'vault_completed':
-    case 'vault_failed':
-    case 'vault_cancelled':
-      payload = {
-        vaultId: readStringField(decoded, 'vaultId') ?? '',
-        status: ((readStringField(decoded, 'status') ??
-          eventType.replace('vault_', '')) as VaultEventPayload['status'])
-      }
-
-      {
+      case 'vault_completed':
+      case 'vault_failed':
+      case 'vault_cancelled': {
+        payload = {
+          vaultId: typeof nativeVal === 'object' && nativeVal !== null
+            ? (readStringField(nativeVal as Record<string, unknown>, 'vaultId') ?? vaultId)
+            : vaultId,
+          status: (
+            (typeof nativeVal === 'object' && nativeVal !== null
+              ? readStringField(nativeVal as Record<string, unknown>, 'status')
+              : undefined) ?? eventType.replace('vault_', '')
+          ) as VaultEventPayload['status'],
+        }
         const statusError = validateVaultStatusPayload(payload)
         if (statusError) {
           console.error(`Vault status validation error: ${statusError}`)
           return null
         }
         return payload
-      
+      }
+
       default:
         return null
     }
@@ -299,23 +299,6 @@ function parseMilestonePayload(xdrData: string): MilestoneEventPayload | null {
     console.error('Error parsing milestone payload XDR:', error)
     return null
   }
-
-  const payload: MilestoneEventPayload = {
-    milestoneId: readStringField(decoded, 'milestoneId') ?? '',
-    vaultId: readStringField(decoded, 'vaultId') ?? '',
-    title: readStringField(decoded, 'title') ?? '',
-    description: readStringField(decoded, 'description') ?? '',
-    targetAmount: readStringField(decoded, 'targetAmount') ?? '',
-    deadline: readDateField(decoded, 'deadline') ?? new Date('invalid')
-  }
-
-  const error = validateMilestonePayload(payload)
-  if (error) {
-    console.error(`Milestone validation error: ${error}`)
-    return null
-  }
-
-  return payload
 }
 
 /**
@@ -391,8 +374,6 @@ function parseValidationPayload(xdrData: string): ValidationEventPayload | null 
     console.error('Error parsing validation payload XDR:', error)
     return null
   }
-
-  return payload
 }
 
 /**
