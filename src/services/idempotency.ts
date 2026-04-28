@@ -32,9 +32,6 @@ export class IdempotencyKeyValidationError extends Error {
   }
 }
 
-// Accepts alphanumeric, hyphens, underscores; 1–255 characters.
-export const IDEMPOTENCY_KEY_REGEX = /^[A-Za-z0-9_\-]{1,255}$/
-
 export const validateIdempotencyKey = (key: string): void => {
   if (!IDEMPOTENCY_KEY_REGEX.test(key)) {
     throw new IdempotencyKeyValidationError()
