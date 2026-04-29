@@ -7,7 +7,9 @@ import {
   type JobPayloadByType,
   type JobType,
 } from '../jobs/types.js'
+import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { requireJson } from '../middleware/requireJson.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { formatValidationError, utcTimestampSchema } from '../lib/validation.js'
@@ -127,7 +129,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
   })
 
   // POST /enqueue — manually trigger a background job (admin only, strict rate limit)
-  jobsRouter.post('/enqueue', enqueueLimiter, (req, res) => {
+  jobsRouter.post('/enqueue', enqueueLimiter, requireJson, (req, res) => {
     const parseResult = enqueueSchema.safeParse(req.body)
     if (!parseResult.success) {
       res.status(400).json(formatValidationError(parseResult.error))
@@ -136,10 +138,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
     try {
       const { payload, type } = parseResult.data
-      const options: EnqueueOptions = {
-        delayMs: parseResult.data.delayMs !== undefined ? Math.floor(parseResult.data.delayMs) : undefined,
-        maxAttempts: parseResult.data.maxAttempts,
-      }
+      const options: EnqueueOptions = parseEnqueueOptions(parseResult.data)
       const queuedJob = enqueueTypedJob(jobSystem, type, payload as JobPayloadByType[JobType], options)
 
       createAuditLog({

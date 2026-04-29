@@ -4,6 +4,7 @@ import { generateAccessToken } from '../src/lib/auth-utils.js'
 import { UserRole } from '../src/types/user.js'
 import { createJobsRouter } from '../src/routes/jobs.js'
 import { BackgroundJobSystem } from '../src/jobs/system.js'
+import { clearAuditLogs, listAuditLogs } from '../src/lib/audit-logs.js'
 
 // ---------------------------------------------------------------------------
 // Test app – minimal Express instance with the jobs router mounted.
@@ -59,6 +60,10 @@ const validBodies = {
 // ---------------------------------------------------------------------------
 
 describe('Jobs API', () => {
+  beforeEach(() => {
+    clearAuditLogs()
+  })
+
   // -------------------------------------------------------------------------
   describe('Authentication', () => {
     const routes = [
@@ -355,6 +360,18 @@ describe('Jobs API', () => {
       expect(new Date(res.body.job.runAt).getTime()).toBeGreaterThanOrEqual(now + 59_000)
     })
 
+    it('floors decimal delayMs as part of options parsing', async () => {
+      const now = Date.now()
+      const res = await request(testApp)
+        .post('/api/jobs/enqueue')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ ...validBodies['deadline.check'], delayMs: 1500.9 })
+        .expect(202)
+
+      expect(new Date(res.body.job.runAt).getTime()).toBeGreaterThanOrEqual(now + 1400)
+      expect(new Date(res.body.job.runAt).getTime()).toBeLessThanOrEqual(now + 2500)
+    })
+
     it('respects maxAttempts option', async () => {
       const res = await request(testApp)
         .post('/api/jobs/enqueue')
@@ -373,6 +390,23 @@ describe('Jobs API', () => {
         .expect(202)
 
       expect(res.body.job.maxAttempts).toBe(3)
+    })
+
+    it('writes an audit log entry for successful enqueue', async () => {
+      const res = await request(testApp)
+        .post('/api/jobs/enqueue')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(validBodies['analytics.recompute'])
+        .expect(202)
+
+      const logs = listAuditLogs({ action: 'job.enqueue', target_id: res.body.job.id, limit: 10 })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toMatchObject({
+        actor_user_id: 'admin-jobs-test',
+        action: 'job.enqueue',
+        target_type: 'job',
+        target_id: res.body.job.id,
+      })
     })
   })
 

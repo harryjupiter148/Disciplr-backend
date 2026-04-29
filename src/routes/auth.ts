@@ -4,6 +4,7 @@ import { registerSchema, loginSchema, refreshSchema } from '../lib/validation.js
 import { createAuditLog } from '../lib/audit-logs.js'
 import { authenticate } from '../middleware/auth.js'
 import { revokeSession, revokeAllUserSessions } from '../services/session.js'
+import { requireJson } from '../middleware/requireJson.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 export const authRouter = Router();
@@ -40,6 +41,7 @@ const upsertMockUser = (userId: string): MockUser => {
 
 // ------------- Endpoints -------------
 
+authRouter.post('/register', requireJson, async (req, res) => {
 authRouter.post('/register', async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
@@ -54,6 +56,7 @@ authRouter.post('/register', async (req, res, next) => {
     }
 })
 
+authRouter.post('/login', requireJson, async (req, res) => {
 authRouter.post('/login', async (req, res, next) => {
     // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
@@ -96,6 +99,7 @@ authRouter.post('/login', async (req, res, next) => {
     }
 })
 
+authRouter.post('/refresh', requireJson, async (req, res) => {
 authRouter.post('/refresh', async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
@@ -110,6 +114,7 @@ authRouter.post('/refresh', async (req, res, next) => {
     }
 })
 
+authRouter.post('/logout', authenticate, requireJson, async (req: Request, res: Response) => {
 authRouter.post(
   "/logout",
   authenticate,
@@ -134,6 +139,7 @@ authRouter.post(
   },
 );
 
+authRouter.post('/logout-all', authenticate, requireJson, async (req: Request, res: Response) => {
 authRouter.post('/logout-all', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   const userId = req.user?.userId
   if (!userId) {
@@ -145,6 +151,7 @@ authRouter.post('/logout-all', authenticate, async (req: Request, res: Response,
   },
 );
 
+authRouter.post('/users/:id/role', requireJson, (req, res) => {
 authRouter.post('/users/:id/role', (req, res, next) => {
   const actorRole = req.header('x-user-role')
   const actorId = req.header('x-user-id')
