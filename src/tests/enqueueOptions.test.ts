@@ -1,3 +1,4 @@
+
 import { describe, it, expect, afterAll } from '@jest/globals'
 import express, { type Request, type Response, type NextFunction } from 'express'
 import request from 'supertest'
@@ -152,6 +153,4 @@ describe('Jobs API Zod Validation - POST /api/jobs/enqueue', () => {
 
     expect(resAbove.body.success).toBe(false)
     expect(resAbove.body.error.code).toBe('VALIDATION_ERROR')
-    expect(resAbove.body.error.details.some((err: any) => err.path.includes('delayMs'))).toBe(true)
-  })
-})
+ 

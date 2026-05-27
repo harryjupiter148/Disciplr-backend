@@ -32,6 +32,7 @@ export interface PersistedMilestone {
   dueDate: string
   amount: string
   sortOrder: number
+  verifierUserId: string | null
   createdAt: string
 }
 
@@ -62,7 +63,9 @@ export interface VaultCreateResponse {
     }
     submission: {
       attempted: boolean
-      status: 'not_requested' | 'not_configured'
+      status: 'not_requested' | 'not_configured' | 'success' | 'error'
+      txHash?: string
+      error?: string
     }
   }
   idempotency: {

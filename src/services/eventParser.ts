@@ -1,10 +1,13 @@
+import { xdr, scValToNative } from '@stellar/stellar-sdk'
 import { 
   ParsedEvent, 
   EventType, 
   VaultEventPayload, 
   MilestoneEventPayload, 
   ValidationEventPayload 
-} from '../types/horizonSync'
+} from '../types/horizonSync.js'
+
+type DecodedPayload = Record<string, unknown>
 
 /**
  * Result of parsing a Horizon event
@@ -36,6 +39,52 @@ export interface HorizonEvent {
   }
   inSuccessfulContractCall: boolean
   txHash: string
+}
+
+function decodePayloadRecord(xdrData: string): DecodedPayload | null {
+  const candidates = [xdrData]
+
+  try {
+    const decoded = Buffer.from(xdrData, 'base64').toString('utf8')
+    if (decoded && decoded !== xdrData) {
+      candidates.push(decoded)
+    }
+  } catch {
+    // Ignore invalid base64 and fall back to direct JSON parsing.
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as DecodedPayload
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  return null
+}
+
+function readStringField(record: DecodedPayload, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+function readDateField(record: DecodedPayload, key: string): Date | undefined {
+  const value = record[key]
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? undefined : value
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed
+  }
+
+  return undefined
 }
 
 /**
@@ -115,57 +164,69 @@ function parseVaultPayload(
   eventType: EventType,
   xdrData: string
 ): VaultEventPayload | null {
-  try {
-    // TODO: Implement full XDR decoding using Stellar SDK
-    // For now, return a minimal payload structure based on event type
-    
-    // Extract vault ID from XDR (placeholder implementation)
-    const vaultId = `vault_${Date.now()}`
-    
-    let payload: VaultEventPayload
-    
-    switch (eventType) {
-      case 'vault_created':
-        payload = {
-          vaultId,
-          creator: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-          amount: '1000.0000000',
-          startTimestamp: new Date(),
-          endTimestamp: new Date(Date.now() + 86400000), // +1 day
-          successDestination: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-          failureDestination: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-          status: 'active'
-        }
-        
-        // Validate vault_created payload
-        const createdError = validateVaultCreatedPayload(payload)
-        if (createdError) {
-          console.error(`Vault created validation error: ${createdError}`)
-          return null
-        }
-        return payload
-      
-      case 'vault_completed':
-      case 'vault_failed':
-      case 'vault_cancelled':
-        payload = {
-          vaultId,
-          status: eventType.replace('vault_', '') as 'completed' | 'failed' | 'cancelled'
-        }
-        
-        // Validate vault status payload
-        const statusError = validateVaultStatusPayload(payload)
-        if (statusError) {
-          console.error(`Vault status validation error: ${statusError}`)
-          return null
-        }
-        return payload
-      
-      default:
-        return null
+  // Try JSON decoding first (test fixtures and fallback path)
+  const decoded = decodePayloadRecord(xdrData)
+
+  let nativeVal: any
+  if (decoded) {
+    nativeVal = decoded
+  } else {
+    try {
+      const scVal = xdr.ScVal.fromXDR(xdrData, 'base64')
+      nativeVal = scValToNative(scVal)
+    } catch (error) {
+      console.error('Error parsing vault payload XDR:', error)
+      return null
     }
-  } catch (error) {
-    return null
+  }
+
+  const vaultId = readStringField(nativeVal, 'vaultId') ??
+    readStringField(nativeVal, 'vault_id') ??
+    (typeof nativeVal === 'string' ? nativeVal : `vault_${Date.now()}`)
+
+  let payload: VaultEventPayload
+
+  switch (eventType) {
+    case 'vault_created': {
+      payload = {
+        vaultId,
+        creator: readStringField(nativeVal, 'creator') || 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        amount: (nativeVal.amount?.toString()) || '1000.0000000',
+        startTimestamp: readDateField(nativeVal, 'startTimestamp') ??
+          (nativeVal.start_date ? new Date(nativeVal.start_date * 1000) : new Date()),
+        endTimestamp: readDateField(nativeVal, 'endTimestamp') ??
+          (nativeVal.end_date ? new Date(nativeVal.end_date * 1000) : new Date(Date.now() + 86400000)),
+        successDestination: readStringField(nativeVal, 'successDestination') ??
+          readStringField(nativeVal, 'success_destination') ?? 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        failureDestination: readStringField(nativeVal, 'failureDestination') ??
+          readStringField(nativeVal, 'failure_destination') ?? 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        status: 'active'
+      }
+      const createdError = validateVaultCreatedPayload(payload)
+      if (createdError) {
+        console.error(`Vault created validation error: ${createdError}`)
+        return null
+      }
+      return payload
+    }
+
+    case 'vault_completed':
+    case 'vault_failed':
+    case 'vault_cancelled': {
+      payload = {
+        vaultId,
+        status: (readStringField(nativeVal, 'status') ||
+          eventType.replace('vault_', '')) as VaultEventPayload['status']
+      }
+      const statusError = validateVaultStatusPayload(payload)
+      if (statusError) {
+        console.error(`Vault status validation error: ${statusError}`)
+        return null
+      }
+    }
+
+    default:
+      return null
   }
 }
 
@@ -216,30 +277,41 @@ function validateMilestonePayload(payload: MilestoneEventPayload): string | null
  * @returns MilestoneEventPayload or null if parsing fails
  */
 function parseMilestonePayload(xdrData: string): MilestoneEventPayload | null {
-  try {
-    // TODO: Implement full XDR decoding using Stellar SDK
-    // For now, return a minimal payload structure
-    
-    const payload: MilestoneEventPayload = {
-      milestoneId: `milestone_${Date.now()}`,
-      vaultId: `vault_${Date.now()}`,
-      title: 'Milestone Title',
-      description: 'Milestone Description',
-      targetAmount: '500.0000000',
-      deadline: new Date(Date.now() + 86400000) // +1 day
-    }
-    
-    // Validate milestone payload
-    const error = validateMilestonePayload(payload)
-    if (error) {
-      console.error(`Milestone validation error: ${error}`)
+  const decoded = decodePayloadRecord(xdrData)
+
+  let nativeVal: any
+  if (decoded) {
+    nativeVal = decoded
+  } else {
+    try {
+      const scVal = xdr.ScVal.fromXDR(xdrData, 'base64')
+      nativeVal = scValToNative(scVal)
+    } catch (error) {
+      console.error('Error parsing milestone payload XDR:', error)
       return null
     }
-    
-    return payload
-  } catch (error) {
+  }
+
+  const payload: MilestoneEventPayload = {
+    milestoneId: readStringField(nativeVal, 'milestoneId') ??
+      readStringField(nativeVal, 'milestone_id') ?? `milestone_${Date.now()}`,
+    vaultId: readStringField(nativeVal, 'vaultId') ??
+      readStringField(nativeVal, 'vault_id') ?? `vault_${Date.now()}`,
+    title: readStringField(nativeVal, 'title') ?? 'Milestone Title',
+    description: readStringField(nativeVal, 'description') ?? 'Milestone Description',
+    targetAmount: (nativeVal.targetAmount?.toString()) ??
+      (nativeVal.amount?.toString()) ?? '500.0000000',
+    deadline: readDateField(nativeVal, 'deadline') ??
+      (nativeVal.due_date ? new Date(nativeVal.due_date * 1000) : new Date(Date.now() + 86400000))
+  }
+
+  const error = validateMilestonePayload(payload)
+  if (error) {
+    console.error(`Milestone validation error: ${error}`)
     return null
   }
+
+  return payload
 }
 
 /**
@@ -289,30 +361,43 @@ function validateValidationPayload(payload: ValidationEventPayload): string | nu
  * @returns ValidationEventPayload or null if parsing fails
  */
 function parseValidationPayload(xdrData: string): ValidationEventPayload | null {
-  try {
-    // TODO: Implement full XDR decoding using Stellar SDK
-    // For now, return a minimal payload structure
-    
-    const payload: ValidationEventPayload = {
-      validationId: `validation_${Date.now()}`,
-      milestoneId: `milestone_${Date.now()}`,
-      validatorAddress: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-      validationResult: 'approved',
-      evidenceHash: 'hash_' + Date.now(),
-      validatedAt: new Date()
-    }
-    
-    // Validate validation payload
-    const error = validateValidationPayload(payload)
-    if (error) {
-      console.error(`Validation event validation error: ${error}`)
+  const decoded = decodePayloadRecord(xdrData)
+
+  let nativeVal: any
+  if (decoded) {
+    nativeVal = decoded
+  } else {
+    try {
+      const scVal = xdr.ScVal.fromXDR(xdrData, 'base64')
+      nativeVal = scValToNative(scVal)
+    } catch (error) {
+      console.error('Error parsing validation payload XDR:', error)
       return null
     }
-    
-    return payload
-  } catch (error) {
+  }
+
+  const payload: ValidationEventPayload = {
+    validationId: readStringField(nativeVal, 'validationId') ??
+      readStringField(nativeVal, 'validation_id') ?? `validation_${Date.now()}`,
+    milestoneId: readStringField(nativeVal, 'milestoneId') ??
+      readStringField(nativeVal, 'milestone_id') ?? `milestone_${Date.now()}`,
+    validatorAddress: readStringField(nativeVal, 'validatorAddress') ??
+      readStringField(nativeVal, 'validator') ?? 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    validationResult: (readStringField(nativeVal, 'validationResult') ??
+      readStringField(nativeVal, 'result') ?? 'approved') as ValidationEventPayload['validationResult'],
+    evidenceHash: readStringField(nativeVal, 'evidenceHash') ??
+      readStringField(nativeVal, 'evidence_hash') ?? `hash_${Date.now()}`,
+    validatedAt: readDateField(nativeVal, 'validatedAt') ??
+      (nativeVal.timestamp ? new Date(nativeVal.timestamp * 1000) : new Date())
+  }
+
+  const error = validateValidationPayload(payload)
+  if (error) {
+    console.error(`Validation event validation error: ${error}`)
     return null
   }
+
+  return payload
 }
 
 /**

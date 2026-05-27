@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { UserRole } from '../types/user.js'
+ 
 
 export const registerSchema = z.object({
     email: z.string().email(),
@@ -19,6 +20,7 @@ export const refreshSchema = z.object({
 export type RegisterInput = z.infer<typeof registerSchema>
 export type LoginInput = z.infer<typeof loginSchema>
 export type RefreshInput = z.infer<typeof refreshSchema>
+
 
 export const nonEmptyString = z.string().trim().min(1)
 
@@ -72,4 +74,3 @@ export const enqueueJobSchema = z.discriminatedUnion('type', [
     delayMs: z.number().int().min(0).max(60000).optional(),
   }),
 ])
-

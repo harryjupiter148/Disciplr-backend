@@ -1,5 +1,6 @@
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import type { Request, Response } from 'express'
+import { redactApiKeyForLogs } from '../services/apiKeys.js'
 
 export interface RateLimitConfig {
   windowMs: number
@@ -18,10 +19,15 @@ const logRateLimitBreached = (req: Request): void => {
   const method = req.method
   const path = req.path
   const userAgent = req.headers['user-agent'] ?? 'unknown'
-  const apiKey = req.headers['x-api-key'] ?? 'none'
+  const apiKeyHeader = typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'] : undefined
+  const apiKey = redactApiKeyForLogs(apiKeyHeader)
 
   console.warn(`[RATE_LIMIT_BREACH] ${timestamp} | IP: ${clientIp} | API_KEY: ${apiKey} | ${method} ${path} | User-Agent: ${userAgent}`)
 }
+
+/** Normalize an IP string for use as a rate-limit key, handling IPv6 subnets. */
+const normalizeIp = (req: Request): string =>
+  ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? 'unknown')
 
 const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
   const windowMs = config.windowMs ?? 15 * 60 * 1000
@@ -35,7 +41,7 @@ const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
     skipSuccessfulRequests: config.skipSuccessfulRequests ?? false,
     keyGenerator: config.keyGenerator ?? ((req) => {
       const apiKey = req.headers['x-api-key'] as string | undefined
-      return apiKey ?? req.ip ?? req.socket.remoteAddress ?? 'unknown'
+      return apiKey ?? normalizeIp(req)
     }),
     handler: config.handler ?? ((req, res) => {
       logRateLimitBreached(req)
@@ -75,6 +81,18 @@ export const strictRateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
   max: 10,
   message: 'Rate limit exceeded. This endpoint has strict rate limits.',
+})
+
+export const metricsRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: 'Metrics endpoint rate limit exceeded. Please try again later.',
+})
+
+export const apiKeyRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many API key management requests. Please try again later.',
 })
 
 export { createRateLimiter }

@@ -101,6 +101,16 @@ export interface ListenerState {
   updatedAt: Date
 }
 
+/** Per-contract checkpoint stored in horizon_checkpoints. */
+export interface HorizonCheckpoint {
+  id: number
+  contractAddress: string
+  lastLedger: number
+  lastPagingToken: string | null
+  updatedAt: Date
+  createdAt: Date
+}
+
 // Configuration Interfaces
 export interface HorizonListenerConfig {
   horizonUrl: string
@@ -109,6 +119,7 @@ export interface HorizonListenerConfig {
   retryMaxAttempts: number
   retryBackoffMs: number
   shutdownTimeoutMs: number
+  lagThreshold: number
 }
 
 export interface ProcessorConfig {

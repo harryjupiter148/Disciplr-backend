@@ -1,4 +1,4 @@
-import { UserRole } from '@prisma/client'
+import { UserRole } from './user.js'
 
 export interface AuthenticatedUser {
   userId: string
@@ -28,6 +28,8 @@ export interface JWTPayload {
   role: UserRole
   email?: string
   jti?: string
+  isEnterprise?: boolean
+  enterpriseId?: string
 }
 
 declare global {

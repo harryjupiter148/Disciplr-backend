@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
@@ -6,46 +6,44 @@ import {
   getMilestonesByVaultId,
   getMilestoneById,
   verifyMilestone,
+  validateMilestone,
   allMilestonesVerified,
 } from '../services/milestones.js'
 import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 export const milestonesRouter = Router({ mergeParams: true })
 
 // POST /api/vaults/:vaultId/milestones
-milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response) => {
+milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
 
   if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
+    return next(AppError.notFound('Vault not found'))
   }
 
   if (vault.status !== 'active') {
-    res.status(409).json({ error: 'Cannot add milestones to a non-active vault' })
-    return
+    return next(AppError.conflict('Cannot add milestones to a non-active vault'))
   }
 
   const { description } = req.body as { description?: string }
   if (!description?.trim()) {
-    res.status(400).json({ error: 'description is required' })
-    return
+    return next(AppError.badRequest('description is required'))
   }
 
-  const milestone = createMilestone(vaultId, description.trim())
+  const milestone = createMilestone(vaultId, description.trim(), vault.verifier)
   res.status(201).json(milestone)
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', (req: Request, res: Response) => {
+milestonesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
 
   if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
+    return next(AppError.notFound('Vault not found'))
   }
 
   const milestones = getMilestonesByVaultId(vaultId)
@@ -53,25 +51,22 @@ milestonesRouter.get('/', (req: Request, res: Response) => {
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
-milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Request, res: Response) => {
+milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId, id } = req.params
 
   const vault = vaults.find((v) => v.id === vaultId)
   if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
+    return next(AppError.notFound('Vault not found'))
   }
 
   const milestone = getMilestoneById(id)
   if (!milestone || milestone.vaultId !== vaultId) {
-    res.status(404).json({ error: 'Milestone not found' })
-    return
+    return next(AppError.notFound('Milestone not found'))
   }
 
   const verified = verifyMilestone(id)
   if (!verified) {
-    res.status(404).json({ error: 'Milestone not found' })
-    return
+    return next(AppError.notFound('Milestone not found'))
   }
 
   let vaultCompleted = false
@@ -81,4 +76,39 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Reque
   }
 
   res.json({ milestone: verified, vaultCompleted })
+})
+
+// POST /api/vaults/:vaultId/milestones/:id/validate
+milestonesRouter.post('/:id/validate', authenticate, requireVerifier, (req: Request, res: Response, next: NextFunction) => {
+  const { vaultId, id } = req.params
+  const validatorUserId = req.user!.userId
+
+  const vault = vaults.find((v) => v.id === vaultId)
+  if (!vault) {
+    return next(AppError.notFound('Vault not found'))
+  }
+
+  const milestone = getMilestoneById(id)
+  if (!milestone || milestone.vaultId !== vaultId) {
+    return next(AppError.notFound('Milestone not found'))
+  }
+
+  const result = validateMilestone(id, validatorUserId)
+  if (!result.success) {
+    if (result.error === 'Milestone already validated') {
+      return next(AppError.conflict('Milestone already validated'))
+    }
+    if (result.error === 'Unauthorized: only assigned verifier can validate') {
+      return next(AppError.forbidden('Unauthorized: only assigned verifier can validate'))
+    }
+    return next(AppError.badRequest(result.error!))
+  }
+
+  let vaultCompleted = false
+  if (allMilestonesVerified(vaultId) && vault.status === 'active') {
+    const result = completeVault(vaultId)
+    vaultCompleted = result.success
+  }
+
+  res.json({ milestone: result.milestone, vaultCompleted })
 })
