@@ -27,6 +27,7 @@ export interface VerificationRecord {
   verifierUserId: string
   targetId: string
   result: VerificationResult
+  evidenceHash: string | null
   disputed: boolean
   timestamp: string
 }
@@ -206,6 +207,7 @@ export const recordVerification = async (
   targetId: string,
   result: VerificationResult,
   disputed = false,
+  evidenceHash?: string,
 ): Promise<VerificationRecord> => {
   const existing = await db('verifications')
     .where({
@@ -228,6 +230,7 @@ export const recordVerification = async (
       target_id: targetId,
       result,
       disputed,
+      evidence_hash: evidenceHash ?? null,
     })
     .returning('*')
 
@@ -372,6 +375,7 @@ function mapVerificationRow(row: any): VerificationRecord {
     verifierUserId: row.verifier_user_id,
     targetId: row.target_id,
     result: row.result,
+    evidenceHash: row.evidence_hash ?? null,
     disputed: !!row.disputed,
     timestamp: row.timestamp?.toISOString?.() ?? row.timestamp,
   }

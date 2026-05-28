@@ -86,10 +86,22 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Reque
   res.json({ milestone: verified, vaultCompleted })
 })
 
+const EVIDENCE_HASH_RE = /^[0-9a-f]{32,128}$/i
+
 // POST /api/vaults/:vaultId/milestones/:id/validate
 milestonesRouter.post('/:id/validate', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
   const { vaultId, id } = req.params
   const validatorUserId = req.user!.userId
+  const { evidenceHash } = req.body as { evidenceHash?: string }
+
+  if (!evidenceHash || !evidenceHash.trim()) {
+    return next(AppError.badRequest('evidenceHash is required'))
+  }
+
+  const cleanEvidenceHash = evidenceHash.trim().toLowerCase()
+  if (!EVIDENCE_HASH_RE.test(cleanEvidenceHash)) {
+    return next(AppError.validation('evidenceHash must be a valid hex string (32–128 characters)'))
+  }
 
   // Prefer DB-backed vault (has lateCheckInWindowSecs + PersistedMilestone.dueDate)
   const persistedVault = await getVaultById(vaultId).catch(() => null)
@@ -104,30 +116,7 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, async (req
     return next(AppError.notFound('Milestone not found'))
   }
 
-  // ── Deadline + grace window enforcement ──────────────────────────────────
-  // Resolve dueDate from the in-memory milestone or from the persisted vault's
-  // milestone list (which carries dueDate from the DB).
-  const persistedMilestone = persistedVault?.milestones.find((m) => m.id === id)
-  const dueDate = milestone.dueDate ?? persistedMilestone?.dueDate ?? null
-
-  if (dueDate) {
-    const now = Date.now()
-    const dueDateMs = Date.parse(dueDate)
-    const endDateMs = Date.parse(vault.endDate ?? vault.endTimestamp ?? '')
-    const graceWindowMs = (persistedVault?.lateCheckInWindowSecs ?? (vault as any).lateCheckInWindowSecs ?? 0) * 1000
-
-    // Effective deadline: dueDate + grace window, but never past vault endDate
-    const effectiveDeadlineMs = Number.isFinite(endDateMs)
-      ? Math.min(dueDateMs + graceWindowMs, endDateMs)
-      : dueDateMs + graceWindowMs
-
-    if (now > effectiveDeadlineMs) {
-      return next(AppError.badRequest('DeadlinePassed: check-in window has closed for this milestone'))
-    }
-  }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const result = validateMilestone(id, validatorUserId)
+  const result = validateMilestone(id, validatorUserId, cleanEvidenceHash)
   if (!result.success) {
     if (result.error === 'Milestone already validated') {
       return next(AppError.conflict('Milestone already validated'))

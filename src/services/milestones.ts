@@ -6,6 +6,7 @@ export interface Milestone {
   verifiedAt: string | null
   verifiedBy: string | null
   verifierId: string | null
+  evidenceHash: string | null
   createdAt: string
   /** ISO 8601 UTC timestamp after which check-in requires a grace window. */
   dueDate: string | null
@@ -23,6 +24,7 @@ export const createMilestone = (vaultId: string, description: string, verifierId
     verifiedAt: null,
     verifiedBy: null,
     verifierId: verifierId || null,
+    evidenceHash: null,
     createdAt: new Date().toISOString(),
     dueDate: dueDate ?? null,
   }
@@ -47,7 +49,7 @@ export const verifyMilestone = (id: string): Milestone | null => {
   return milestone
 }
 
-export const validateMilestone = (id: string, validatorUserId: string): { success: boolean, milestone?: Milestone, error?: string } => {
+export const validateMilestone = (id: string, validatorUserId: string, evidenceHash: string): { success: boolean, milestone?: Milestone, error?: string } => {
   const milestone = milestonesTable.find((m) => m.id === id)
   if (!milestone) return { success: false, error: 'Milestone not found' }
 
@@ -62,6 +64,7 @@ export const validateMilestone = (id: string, validatorUserId: string): { succes
   milestone.verified = true
   milestone.verifiedAt = new Date().toISOString()
   milestone.verifiedBy = validatorUserId
+  milestone.evidenceHash = evidenceHash
 
   // Record validation event
   addMilestoneEvent({

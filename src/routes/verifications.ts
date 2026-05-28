@@ -8,15 +8,16 @@ import { createEvidenceReference, EvidenceReferenceValidationError } from '../se
 
 export const verificationsRouter = Router()
 
+const EVIDENCE_HASH_RE = /^[0-9a-f]{32,128}$/i
+
 verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
   const payload = req.user!
   const verifierUserId = payload.userId
-  const { targetId, result, disputed, evidenceHash, evidenceReferenceUrl } = req.body as {
+  const { targetId, result, disputed, evidenceHash } = req.body as {
     targetId?: string
     result?: 'approved' | 'rejected'
     disputed?: boolean
     evidenceHash?: string
-    evidenceReferenceUrl?: string
   }
 
   if (!targetId || !targetId.trim()) {
@@ -28,11 +29,12 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
   }
 
   if (!evidenceHash || !evidenceHash.trim()) {
-    return next(AppError.validation('evidenceHash is required'))
+    return next(AppError.badRequest('evidenceHash is required'))
   }
 
-  if (!evidenceReferenceUrl || !evidenceReferenceUrl.trim()) {
-    return next(AppError.validation('evidenceReferenceUrl is required'))
+  const cleanEvidenceHash = evidenceHash.trim().toLowerCase()
+  if (!EVIDENCE_HASH_RE.test(cleanEvidenceHash)) {
+    return next(AppError.validation('evidenceHash must be a valid hex string (32–128 characters)'))
   }
 
   try {
@@ -42,7 +44,8 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
       verifierUserId,
       cleanTargetId,
       result,
-      !!disputed
+      !!disputed,
+      cleanEvidenceHash,
     )
 
     const evidenceReference = await createEvidenceReference(
@@ -59,7 +62,7 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
       metadata: {
         result,
         disputed: !!disputed,
-        evidence_attached: true,
+        evidence_hash: cleanEvidenceHash,
       },
     })
 

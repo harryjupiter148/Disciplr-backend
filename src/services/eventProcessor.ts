@@ -3,7 +3,7 @@ import { ParsedEvent, ProcessorConfig, VaultEventPayload, MilestoneEventPayload,
 import { retryWithBackoff, isRetryable } from '../utils/retry.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { IdempotencyService } from './idempotency.js'
-import { transitionVaultStatus } from './vaultTransitions.js'
+import { dispatchWebhookEvent, VAULT_LIFECYCLE_EVENTS } from './webhooks.js'
 
 /**
  * Error thrown when a dependency (e.g., a vault for a milestone) is not yet in the DB.
@@ -86,6 +86,18 @@ export class EventProcessor {
           processing_duration_ms: processingDurationMs
         }
       })
+
+      // Fire-and-forget webhook dispatch for vault lifecycle events
+      if (VAULT_LIFECYCLE_EVENTS.has(event.eventType)) {
+        dispatchWebhookEvent({
+          eventId: event.eventId,
+          eventType: event.eventType,
+          timestamp: new Date().toISOString(),
+          data: event.payload as Record<string, unknown>,
+        }).catch((err) => {
+          console.error('[EventProcessor] webhook dispatch error:', err?.message)
+        })
+      }
 
       return { success: true, eventId: event.eventId }
     } catch (error) {
