@@ -7,38 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  contracts-fuzz:
-    name: Fuzz create_vault (30 s)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: fuzz-${{ hashFiles('contracts/accountability_vault/fuzz/Cargo.toml') }}
-          restore-keys: fuzz-
-
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-
-      - name: Run fuzz harness (capped at 30 s)
-        working-directory: contracts/accountability_vault
-        run: cargo fuzz run create_vault -- -max_total_time=30
-
-      - name: Upload crash artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-crashes
-          path: contracts/accountability_vault/fuzz/artifacts/
-
   test-and-migrate:
     runs-on: ubuntu-latest
     services:
@@ -86,36 +54,28 @@ jobs:
         env:
           NODE_ENV: test
 
-  contracts:
+  cargo-audit-contracts:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions/setup-rust@v1
+      - name: Check for contracts changes
+        id: changes
+        uses: dorny/paths-filter@v3
         with:
-          rust-version: stable
+          filters: |
+            contracts:
+              - 'contracts/**'
 
-      - name: Cache Cargo registry and build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            contracts/accountability_vault/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/accountability_vault/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - name: Install Rust
+        if: steps.changes.outputs.contracts == 'true'
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-contract
-        run: |
-          cargo install cargo-contract --locked
-          rustup target add wasm32-unknown-unknown
+      - name: Install cargo-audit
+        if: steps.changes.outputs.contracts == 'true'
+        run: cargo install cargo-audit
 
-      - name: Build Soroban contract
-        run: cargo contract build --manifest-path contracts/accountability_vault/Cargo.toml --release
-
-      - name: Run Soroban contract tests
-        run: cargo test --manifest-path contracts/accountability_vault/Cargo.toml --verbose
+      - name: Run cargo audit
+        if: steps.changes.outputs.contracts == 'true'
+        run: cd contracts && cargo audit

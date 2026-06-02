@@ -362,6 +362,39 @@ cargo clippy -- -D warnings
 To suppress known false-positives in generated Soroban SDK code, add
 `#[allow(clippy::...)]` at the item level rather than disabling workspace-wide.
 
+#### Dependency Security Audit
+
+The workspace uses `cargo audit` to check for known security advisories in Rust
+dependencies from [RustSec](https://rustsec.org).
+
+Run locally:
+```bash
+cd contracts
+cargo audit
+```
+
+CI automatically runs `cargo audit` on PRs/pushes that modify files under `contracts/`.
+
+##### Triage & Acknowledging Advisories
+
+If `cargo audit` finds advisories:
+
+1. **First try upgrading dependencies**: Check if the affected crate has a fixed version
+   available and update `Cargo.toml`/`Cargo.lock` accordingly.
+2. **For unavoidable advisories**: If an advisory is from a transitive dependency that
+   can't be upgraded (e.g., part of a closed-source dependency tree or no fix exists yet),
+   you can ignore it by creating an `audit.toml` file in `contracts/`:
+
+```toml
+# Example audit.toml
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0436",  # paste is unmaintained, transitive dep of soroban-sdk
+]
+```
+
+Include a comment explaining why the advisory is being ignored.
+
 #### Test Coverage
 
 The contract maintains comprehensive test coverage including:
