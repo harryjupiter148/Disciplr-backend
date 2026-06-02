@@ -300,6 +300,23 @@ With ETags (120 requests, 95% hit rate):
 
 Status codes: 200, 201, 400, 401, 403, 404, 500
 
+### Stellar address checksum validation
+
+Fields that accept Stellar ed25519 public keys (addresses starting with "G")
+are validated for both format and checksum at request time. Invalid addresses
+will be rejected with a `400` validation error. Example response for an
+invalid `verifier` value:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid Stellar public key",
+    "details": { "field": "verifier" }
+  }
+}
+```
+
 ## Security
 
 - JWT authentication required for all endpoints

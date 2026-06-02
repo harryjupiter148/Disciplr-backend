@@ -325,7 +325,11 @@ export class InMemoryJobQueue {
       this.recordCompletedJob(job, Date.now() - startedAt)
     } catch (error) {
       const message = getErrorMessage(error)
-      if (job.attempt < job.maxAttempts) {
+
+      // If the handler marked the error as non-retryable, record failure and skip retry
+      if (error && (error as any).nonRetryable) {
+        this.recordFailedJob(job, message)
+      } else if (job.attempt < job.maxAttempts) {
         this.totals.retried += 1
         job.runAt = Date.now() + this.getRetryDelayMs(job.attempt)
         this.pendingJobs.push(job)

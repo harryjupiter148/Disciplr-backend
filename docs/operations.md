@@ -49,5 +49,19 @@ All environment variables are validated at startup using `src/config/env.ts`. If
 | `JOB_WORKER_CONCURRENCY` | 2 | Number of concurrent job workers. |
 | `JOB_QUEUE_POLL_INTERVAL_MS` | 250 | How often the job queue checks for new work. |
 | `JOB_HISTORY_LIMIT` | 50 | Number of completed/failed jobs to keep in memory metrics. |
-| `DATABASE_URL` | - | PostgreSQL connection URL. |
-| `JWT_SECRET` | - | Secret for signing JWTs. |
+
+## Docker images & healthchecks
+
+- Dockerfile: A multi-stage, Node 20 (alpine) image is provided at the repository root. It sets `WORKDIR /app` and runs the container as the non-root `node` user for improved security.
+- Healthcheck: The `docker-compose.yml` now declares a `backend` service with a `healthcheck` that calls `/api/health`. The Postgres `db` service also has a readiness check. Compose `depends_on` is configured so `backend` will wait for `db` to be healthy.
+
+Validation (recommended in CI):
+
+```bash
+docker compose build && docker compose up --wait
+```
+
+Notes:
+- The runtime image includes `curl` so the healthcheck can probe the HTTP endpoint.
+- CI should run the `docker compose up --wait` step to ensure service health ordering behaves as expected.
+

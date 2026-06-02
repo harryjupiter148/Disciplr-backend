@@ -1,5 +1,5 @@
-import { Router, type Request, type Response } from 'express'
-import { authenticate } from '../middleware/auth.js'
+import { Router, type Request, type Response, type NextFunction } from 'express'
+import { authenticate } from '../middleware/auth.middleware.js'
 import { requireScopes } from '../middleware/apiKeyAuth.js'
 import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'
@@ -14,8 +14,9 @@ import {
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
-import { createVaultSchema, flattenZodErrors } from '../services/vaultValidation.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById } from '../services/vaultStore.js'
+import { createVaultSchema, flattenZodErrors, isValidStellarAddress } from '../services/vaultValidation.js'
+import { AppError } from '../middleware/errorHandler.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
 import { etagMatches } from '../utils/etag.js'
@@ -66,7 +67,7 @@ vaultsRouter.get(
 
 // POST /api/vaults 
 
-vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
+vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   // 1. Idempotency – replay cached response if key+hash match
   const idempotencyKey = req.header('idempotency-key') ?? null
   const requestHash = hashRequestPayload(req.body)
@@ -94,6 +95,23 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
   }
 
   const input = parseResult.data
+
+  // Ensure Stellar addresses (verifier and destinations) pass checksum
+  try {
+    if (input.verifier && !(await isValidStellarAddress(input.verifier))) {
+      return next(AppError.validation('invalid Stellar public key', { field: 'verifier' }))
+    }
+
+    if (input.destinations?.success && !(await isValidStellarAddress(input.destinations.success))) {
+      return next(AppError.validation('invalid Stellar public key', { field: 'destinations.success' }))
+    }
+
+    if (input.destinations?.failure && !(await isValidStellarAddress(input.destinations.failure))) {
+      return next(AppError.validation('invalid Stellar public key', { field: 'destinations.failure' }))
+    }
+  } catch (err) {
+    return next(AppError.internal('address validation failed'))
+  }
 
   try {
     const { vault } = await createVaultWithMilestones(input)
