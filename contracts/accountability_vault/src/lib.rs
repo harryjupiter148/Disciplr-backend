@@ -143,7 +143,10 @@ pub enum Error {
     NoMilestones = 5,
     NotDraft = 6,
     NotActive = 7,
-    Unauthorized = 8,
+    Unauthorized = 8, // backward compatibility
+    NotCreator = 23,
+    NotVerifier = 24,
+    NotCreatorOrVerifier = 25,
     AlreadyStaked = 9,
     MilestoneIndexOutOfRange = 10,
     MilestoneAlreadyVerified = 11,
