@@ -1,7 +1,11 @@
-import { defaultJobHandlers } from './handlers.js'
+import { createDefaultJobHandlers } from './handlers.js'
 import { InMemoryJobQueue, type QueueMetrics, type QueuedJobReceipt } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import {
+  createNotificationService,
+  type NotificationService,
+} from '../services/notifications/factory.js'
 
 const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
   if (!value) {
@@ -22,12 +26,15 @@ export class BackgroundJobSystem {
   private started = false
   private shuttingDown = false
 
-  constructor() {
+  constructor(notificationService?: NotificationService) {
     this.queue = new InMemoryJobQueue({
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
       pollIntervalMs: parsePositiveInteger(process.env.JOB_QUEUE_POLL_INTERVAL_MS, 250),
       historyLimit: parsePositiveInteger(process.env.JOB_HISTORY_LIMIT, 50),
     })
+    const resolvedNotificationService =
+      notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
+    const handlers = createDefaultJobHandlers(resolvedNotificationService)
 
     this.queue.registerHandler('notification.send', defaultJobHandlers['notification.send'])
     this.queue.registerHandler('deadline.check', defaultJobHandlers['deadline.check'])
@@ -86,6 +93,13 @@ export class BackgroundJobSystem {
       throw new Error('Cannot replay dead-letter job: system is shutting down')
     }
     return this.queue.replayDeadLetter(jobId)
+  }
+
+  retryJob(jobId: string, force: boolean = false): QueuedJobReceipt<JobType> {
+    if (this.shuttingDown) {
+      throw new Error('Cannot retry job: system is shutting down')
+    }
+    return this.queue.retryJob(jobId, force)
   }
 
   getMetrics(): QueueMetrics {

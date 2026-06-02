@@ -23,6 +23,9 @@ export interface CreateVaultInput {
     contractId?: string
     networkPassphrase?: string
     sourceAccount?: string
+    /** SEP-41 token contract address. SAC (Stellar Asset Contract) by default;
+     *  pass a Wasm-based token address to test generic SEP-41 compliance. */
+    token?: string
   }
 }
 
@@ -52,6 +55,35 @@ export interface PersistedVault {
   milestones: PersistedMilestone[]
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs: number
+}
+
+export interface StakeInput {
+  vaultId: string
+  amount: string
+  user: string
+  onChain?: {
+    mode?: 'build' | 'submit'
+    contractId?: string
+    networkPassphrase?: string
+    sourceAccount?: string
+  }
+}
+
+export interface StakeResponse {
+  mode: 'build' | 'submit'
+  payload: {
+    contractId: string
+    networkPassphrase: string
+    sourceAccount: string
+    method: 'stake'
+    args: Record<string, unknown>
+  }
+  submission: {
+    attempted: boolean
+    status: 'not_requested' | 'not_configured' | 'success' | 'error'
+    txHash?: string
+    error?: string
+  }
 }
 
 export interface VaultCreateResponse {

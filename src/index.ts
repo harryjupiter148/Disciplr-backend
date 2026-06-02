@@ -4,6 +4,8 @@ import { initEnv } from './config/index.js'
 // This ensures the process exits immediately on misconfiguration.
 initEnv()
 
+import { ensureSorobanBootPrecheck } from './services/sorobanBoot.js'
+
 import { app } from './app.js'
 import { bootstrapApp } from './app-bootstrap.js'
 import { startExpirationChecker } from './services/expirationScheduler.js'
@@ -22,13 +24,17 @@ import {
 import { initializeDatabase, closeDatabase } from './db/database.js'
 import { etlWorker } from './services/etlWorker.js'
 import { createShutdownHandler } from './server/shutdown.js'
+import { getEnv } from './config/index.js'
+import { createNotificationService } from './services/notifications/factory.js'
 
 const PORT = process.env.PORT ?? 3000
 
 // Initialize SQLite database for analytics
 initializeDatabase()
 
-const { jobSystem } = bootstrapApp()
+const env = getEnv()
+const notificationService = createNotificationService(env.NOTIFICATION_PROVIDER)
+const { jobSystem } = bootstrapApp({ notificationService })
 
 jobSystem.start()
 
@@ -40,6 +46,7 @@ const server = app.listen(PORT, () => {
   if (process.env.ENABLE_ETL_WORKER !== 'false') {
     etlWorker.start(ETL_INTERVAL_MINUTES)
   }
+  void ensureSorobanBootPrecheck()
 })
 
 const shutdownHandler = createShutdownHandler({
