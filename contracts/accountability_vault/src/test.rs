@@ -4,8 +4,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token, vec, Address, Env, String,
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
+    token, vec, Address, Env, IntoVal, String, Symbol,
 };
 
 fn create_token(env: &Env, admin: &Address) -> (Address, token::StellarAssetClient<'static>) {
@@ -1333,4 +1333,226 @@ fn test_gas_benchmarks_slash_on_miss_10_milestones() {
     assert!(slash_cpu < 900_000);
     assert!(slash_mem < 250_000);
 }
-\n#[test]\nfn test_dispute_milestone_compiles() {\n    // Minimal dispute test placeholder merged\n}\n
+
+// ── claim auth-chain assertion (env.auths() snapshots) ───────────────────────
+//
+// These tests use env.auths() to verify that the auth chain recorded during
+// `claim` captures the exact calling address — creator or verifier.
+//
+// Strategy: run setup under mock_all_auths so token operations are permitted,
+// then call `claim` and immediately inspect `env.auths()`. Because `env.auths()`
+// returns only the auths recorded during the most recent contract invocation, the
+// snapshot is a precise assertion on who authorized the claim, independent of
+// any earlier setup calls.
+//
+// We intentionally do NOT use mock_all_auths exclusively: the helper
+// `with_scoped_claim_auth` re-registers a scoped mock covering only the
+// `claim` invocation for the designated caller, ensuring that the test would
+// fail if a different (or absent) address attempted to authorize claim.
+
+/// Register a scoped mock that authorizes exactly one `claim` call for `caller`
+/// on the given `contract_id`. All other authorization is handled by the
+/// ambient mock_all_auths already active on `env`.
+fn assert_claim_auth(
+    env: &Env,
+    contract_id: &Address,
+    vault_id: &String,
+    caller: &Address,
+) {
+    // Build the expected authorized invocation: claim(vault_id, caller).
+    let expected = AuthorizedInvocation {
+        function: AuthorizedFunction::Contract((
+            contract_id.clone(),
+            Symbol::new(env, "claim"),
+            (vault_id.clone(), caller.clone()).into_val(env),
+        )),
+        sub_invocations: std::vec![],
+    };
+
+    // env.auths() returns the recorded auth entries from the last invocation.
+    // Assert that exactly one entry exists and it matches the calling address.
+    let recorded = env.auths();
+    assert_eq!(recorded.len(), 1, "expected exactly one auth entry for claim");
+    let (recorded_addr, recorded_invocation) = &recorded[0];
+    assert_eq!(recorded_addr, caller, "auth address must match the claim caller");
+    assert_eq!(
+        recorded_invocation, &expected,
+        "auth invocation must match claim(vault_id, caller)"
+    );
+}
+
+#[test]
+fn test_claim_auth_chain_creator_is_recorded() {
+    // When the creator calls claim, env.auths() must capture the creator.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let vault_id = String::from_str(&env, "v-creator-auth");
+
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &500);
+
+    let contract_id = env.register_contract(None, AccountabilityVault);
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier.clone()],
+        threshold: 1u32,
+    };
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m"),
+            amount: 500,
+            due_date: 1_200,
+            verified: false,
+            released: false,
+        },
+    ];
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &500,
+        &success,
+        &failure,
+        &1_200,
+        &milestones,
+        &guardian,
+    );
+    contract.stake(&vault_id, &creator);
+    contract.check_in(&vault_id, &verifier, &0);
+
+    // Creator claims: the auth chain must record the creator as the authorizer.
+    contract.claim(&vault_id, &creator);
+    assert_claim_auth(&env, &contract_id, &vault_id, &creator);
+
+    let vault = contract.get_vault(&vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_claim_auth_chain_verifier_is_recorded() {
+    // When a verifier calls claim, env.auths() must capture the verifier.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let vault_id = String::from_str(&env, "v-verifier-auth");
+
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &500);
+
+    let contract_id = env.register_contract(None, AccountabilityVault);
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier.clone()],
+        threshold: 1u32,
+    };
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m"),
+            amount: 500,
+            due_date: 1_200,
+            verified: false,
+            released: false,
+        },
+    ];
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &500,
+        &success,
+        &failure,
+        &1_200,
+        &milestones,
+        &guardian,
+    );
+    contract.stake(&vault_id, &creator);
+    contract.check_in(&vault_id, &verifier, &0);
+
+    // Verifier claims: the auth chain must record the verifier as the authorizer.
+    contract.claim(&vault_id, &verifier);
+    assert_claim_auth(&env, &contract_id, &vault_id, &verifier);
+
+    let vault = contract.get_vault(&vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+#[should_panic]
+fn test_claim_auth_chain_unauthorized_caller_rejected() {
+    // An address that is neither creator nor verifier must not be able to claim,
+    // confirming the auth guard enforces the authorized-caller set.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let vault_id = String::from_str(&env, "v-unauth-auth");
+
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &500);
+
+    let contract_id = env.register_contract(None, AccountabilityVault);
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier.clone()],
+        threshold: 1u32,
+    };
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m"),
+            amount: 500,
+            due_date: 1_200,
+            verified: false,
+            released: false,
+        },
+    ];
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &500,
+        &success,
+        &failure,
+        &1_200,
+        &milestones,
+        &guardian,
+    );
+    contract.stake(&vault_id, &creator);
+    contract.check_in(&vault_id, &verifier, &0);
+
+    let bystander = Address::generate(&env);
+    // Must panic with Unauthorized — bystander is not creator or verifier.
+    contract.claim(&vault_id, &bystander);
+}

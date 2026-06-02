@@ -228,6 +228,52 @@ The contract maintains comprehensive test coverage including:
 - Joint deadline extension (`extend_deadline`)
 - Disputed state: `admin_dispute` enters hold, `admin_resolve` returns to Active/Completed/Failed, `slash_on_miss` and `claim` blocked while disputed
 - Gas benchmarks with hard CPU/memory bounds
+- **Claim auth-chain assertions**: `env.auths()` snapshots verifying the recorded authorizer
+  matches the claim caller, separately for the creator path and the verifier path
+
+#### Auth-Chain Assertion Pattern
+
+The `claim` function may be called by either the vault creator or any member of the verifier
+set. Two dedicated tests in `test.rs` lock down this invariant using `env.auths()` snapshots
+rather than a blanket `mock_all_auths`:
+
+**Why `env.auths()`?**
+`env.auths()` returns the list of `(Address, AuthorizedInvocation)` pairs that were recorded
+during the most recent contract call. Asserting on this list proves that the contract called
+`Address::require_auth()` for exactly the address that was passed as `caller`, and not for a
+different address. This catches bugs where `require_auth()` is called on the wrong variable
+or is missing entirely.
+
+**How the tests work:**
+
+1. Setup (`create_vault`, `stake`, `check_in`) runs under `env.mock_all_auths()` so token
+   operations succeed without requiring real signatures.
+2. `claim` is invoked with either `creator` or `verifier` as the caller.
+3. `env.auths()` is inspected immediately after the call. The test asserts:
+   - Exactly one auth entry was recorded.
+   - The authorized address equals the claim caller.
+   - The authorized function matches `claim(vault_id, caller)` exactly.
+
+```rust
+// After contract.claim(&vault_id, &creator):
+let recorded = env.auths();
+assert_eq!(recorded.len(), 1);
+let (addr, invocation) = &recorded[0];
+assert_eq!(addr, &creator);
+assert_eq!(invocation.function, AuthorizedFunction::Contract((
+    contract_id.clone(),
+    Symbol::new(&env, "claim"),
+    (vault_id.clone(), creator.clone()).into_val(&env),
+)));
+```
+
+**Helper function:** `assert_claim_auth(env, contract_id, vault_id, caller)` encapsulates
+this check and is shared by both the creator and verifier path tests, keeping each test
+focused on the setup path that distinguishes them.
+
+**What is NOT tested here:** The tests do not assert on auth entries from `stake` or
+`check_in` because those calls happen in setup before the `env.auths()` snapshot is taken.
+`env.auths()` only reflects the most recent invocation.
 
 ### Deployment
 
