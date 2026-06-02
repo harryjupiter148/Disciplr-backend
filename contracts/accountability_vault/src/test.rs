@@ -696,6 +696,73 @@ fn test_stake_from_oracle_checkin_claim_full_flow() {
     assert_eq!(token_client.balance(&success), 500);
 }
 
+// ── vault_completed event attribution tests ───────────────────────────────────
+
+/// Helper: find all events whose first topic string matches `name`.
+fn find_events_by_name<'a>(
+    env: &Env,
+    events: &'a soroban_sdk::Vec<(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)>,
+    name: &str,
+) -> std::vec::Vec<(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
+    use soroban_sdk::IntoVal;
+    let name_val: soroban_sdk::Val = String::from_str(env, name).into_val(env);
+    let mut result = std::vec![];
+    for event in events.iter() {
+        let topics = event.1.clone();
+        if topics.len() >= 1 && topics.get(0).unwrap() == name_val {
+            result.push(event.clone());
+        }
+    }
+    result
+}
+
+#[test]
+fn test_vault_completed_event_includes_creator_and_success_destination_via_claim() {
+    // After a full claim(), the vault_completed event topics must be
+    // (event_name, creator, success_destination) for unambiguous attribution.
+    use soroban_sdk::IntoVal;
+
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract.check_in(&s.vault_id, &s.verifier, &0);
+    s.contract.claim(&s.vault_id, &s.creator);
+
+    let all = s.env.events().all();
+    let completed_events = find_events_by_name(&s.env, &all, "vault_completed");
+    assert_eq!(completed_events.len(), 1, "expected exactly one vault_completed event");
+
+    let topics = completed_events[0].1.clone();
+    // topics[0] = event name (already checked), topics[1] = creator, topics[2] = success_destination
+    assert_eq!(topics.len(), 3);
+    let creator_val: soroban_sdk::Val = s.creator.into_val(&s.env);
+    let success_val: soroban_sdk::Val = s.success.into_val(&s.env);
+    assert_eq!(topics.get(1).unwrap(), creator_val, "topic[1] must be creator");
+    assert_eq!(topics.get(2).unwrap(), success_val, "topic[2] must be success_destination");
+}
+
+#[test]
+fn test_vault_completed_event_includes_creator_and_success_destination_via_claim_milestone() {
+    // After all milestones are claimed via claim_milestone(), the vault_completed
+    // event topics must be (event_name, creator, success_destination).
+    use soroban_sdk::IntoVal;
+
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract.check_in(&s.vault_id, &s.verifier, &0);
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    let all = s.env.events().all();
+    let completed_events = find_events_by_name(&s.env, &all, "vault_completed");
+    assert_eq!(completed_events.len(), 1, "expected exactly one vault_completed event");
+
+    let topics = completed_events[0].1.clone();
+    assert_eq!(topics.len(), 3);
+    let creator_val: soroban_sdk::Val = s.creator.into_val(&s.env);
+    let success_val: soroban_sdk::Val = s.success.into_val(&s.env);
+    assert_eq!(topics.get(1).unwrap(), creator_val, "topic[1] must be creator");
+    assert_eq!(topics.get(2).unwrap(), success_val, "topic[2] must be success_destination");
+}
+
 // ── issue #352: checks-effects-interactions ordering tests ───────────────────
 
 #[test]

@@ -17,6 +17,29 @@ The accountability vault allows users to:
 - Set success and failure destinations for fund release
 - Allow reclaiming residual (dust) token balances to the creator after settlement
 
+### Event Attribution
+
+#### `vault_completed`
+
+The `vault_completed` event is emitted by both `claim` and `claim_milestone` (on final
+release) with the following topic structure:
+
+```
+topics: ("vault_completed", creator: Address, success_destination: Address)
+data:   released_amount: i128
+```
+
+Both `creator` and `success_destination` are included in the topics so downstream
+analytics can attribute a completed vault unambiguously:
+
+- Use `creator` to attribute completion to the vault owner (e.g. success-rate metrics,
+  leaderboards, user dashboards).
+- Use `success_destination` to attribute fund flows to the receiving address (e.g. capital
+  movement reports, payout tracking).
+
+Prior to this change only `success_destination` appeared in the topic, making it impossible
+to recover the originating creator from the event alone without a storage lookup.
+
 ### Security Invariants
 
 #### Checks-Effects-Interactions (CEI) Pattern

@@ -600,6 +600,7 @@ impl AccountabilityVault {
         env.events().publish(
             (
                 String::from_str(&env, "vault_completed"),
+                vault.creator.clone(),
                 success_destination,
             ),
             released,
@@ -665,6 +666,7 @@ impl AccountabilityVault {
             env.events().publish(
                 (
                     String::from_str(&env, "vault_completed"),
+                    vault.creator.clone(),
                     vault.success_destination.clone(),
                 ),
                 vault.amount,
