@@ -399,7 +399,256 @@ impl AccountabilityVault {
     /// Slashes funds to the failure destination after the deadline if milestones remain incomplete.
     pub fn slash_on_miss(env: Env, vault_id: String) -> Result<(), Error> {
         let key = DataKey::Vault(vault_id);
-        let mut vault: Vault = env
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_cancelled"), creator), 0i128);
+        Ok(())
+    }
+
+    /// Refunds the creator for an `Active` vault that was never checked-in.
+    /// This function is restricted to `Active` refund cases; callers that wish
+    /// to cancel a Draft should call `cancel_vault` instead.
+    pub fn withdraw(env: Env, vault_id: String, creator: Address) -> Result<(), Error> {
+        creator.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if creator != vault.creator {
+            return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Active {
+            return Err(Error::NotActive);
+        }
+        if vault.paused {
+            return Err(Error::Paused);
+        }
+        if Self::any_verified(&vault) {
+            return Err(Error::Unauthorized);
+        }
+        if vault.staked == 0 {
+            return Err(Error::NothingToWithdraw);
+        }
+
+        // CEI: capture transfer values, update and persist state, then call external token.
+        let refunded = vault.staked;
+        let token_addr = vault.token.clone();
+        vault.staked = 0;
+        vault.status = VaultStatus::Cancelled;
+        env.storage().instance().set(&DataKey::Vault, &vault);
+
+        token::Client::new(&env, &token_addr).transfer(
+            &env.current_contract_address(),
+            &creator,
+            &refunded,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "vault_withdrawn"), creator),
+            refunded,
+        );
+        Ok(())
+    }
+
+    /// Transitions an `Active` vault into `Disputed`, blocking `slash_on_miss` and
+    /// `claim` until an admin resolves the dispute.
+    ///
+    /// Only the `guardian` address may call this. The vault must be `Active`.
+    pub fn admin_dispute(env: Env, vault_id: String, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if admin != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Active {
+            return Err(Error::NotActive);
+        }
+
+        vault.status = VaultStatus::Disputed;
+        let key = DataKey::Vault(vault_id);
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_disputed"), admin), ());
+        Ok(())
+    }
+
+    /// Resolves a `Disputed` vault to `Active`, `Completed`, or `Failed`.
+    ///
+    /// Only the `guardian` address may call this. `target` must be one of those
+    /// three statuses; any other value is rejected with `Error::NotActive`.
+    ///
+    /// Resolving to `Completed` or `Failed` is a terminal administrative decision
+    /// and does **not** trigger a token transfer — settlement still goes through
+    /// `claim` (for Completed) or `slash_on_miss` (for Failed) once the vault is
+    /// back in the appropriate resolved state.
+    pub fn admin_resolve(
+        env: Env,
+        vault_id: String,
+        admin: Address,
+        target: VaultStatus,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if admin != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Disputed {
+            return Err(Error::VaultDisputed);
+        }
+
+        match target {
+            VaultStatus::Active | VaultStatus::Completed | VaultStatus::Failed => {}
+            _ => return Err(Error::NotActive),
+        }
+
+        vault.status = target;
+        let key = DataKey::Vault(vault_id);
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_dispute_resolved"), admin), target as u32);
+        Ok(())
+    }
+
+    /// Pauses the vault, blocking `slash_on_miss`, `claim`, and active `withdraw`.
+    ///
+    /// Only the `guardian` address set at vault creation may call this function.
+    /// Use to halt settlement during disputes or detected incidents.
+    pub fn emergency_pause(
+        env: Env,
+        vault_id: String,
+        guardian: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if guardian != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        vault.paused = true;
+        env.storage().instance().set(&DataKey::Vault(vault_id), &vault);
+        env.events()
+            .publish((Symbol::new(&env, "vault_paused"), guardian), true);
+        Ok(())
+    }
+
+    /// Unpauses the vault, re-enabling `slash_on_miss`, `claim`, and `withdraw`.
+    ///
+    /// Only the `guardian` address set at vault creation may call this function.
+    pub fn emergency_unpause(
+        env: Env,
+        vault_id: String,
+        guardian: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if guardian != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        vault.paused = false;
+        env.storage().instance().set(&DataKey::Vault(vault_id), &vault);
+        env.events()
+            .publish((Symbol::new(&env, "vault_unpaused"), guardian), false);
+        Ok(())
+    }
+
+    /// Read-only accessor returning the current vault record.
+    pub fn get_vault(env: Env, vault_id: String) -> Result<Vault, Error> {
+        Self::load(&env, &vault_id)
+    }
+
+    /// Returns indices of milestones that have not yet been verified, in order.
+    ///
+    /// Used by the backend deadline-check keeper (`src/jobs/handlers.ts`) to
+    /// identify which milestones to pass to `slash_on_miss` without reading the
+    /// full `Vault` struct and filtering client-side.
+    pub fn get_unverified_milestone_indices(
+        env: Env,
+        vault_id: String,
+    ) -> Result<Vec<u32>, Error> {
+        let vault = Self::load(&env, &vault_id)?;
+        let mut indices = Vec::new(&env);
+        let mut i: u32 = 0;
+        while i < vault.milestones.len() {
+            if !vault.milestones.get(i).unwrap().verified {
+                indices.push_back(i);
+            }
+            i += 1;
+        }
+        Ok(indices)
+    }
+
+    /// Sweeps any residual token balance held by the contract to the vault creator
+    /// after a terminal settlement. Only the creator may call this, and only once
+    /// `staked` has been zeroed by `claim`, `slash_on_miss`, or `withdraw`.
+    pub fn reclaim_after_settlement(env: Env, vault_id: String, token_address: Address) -> Result<(), Error> {
+        let vault: Vault = Self::load(&env, &vault_id)?;
+        vault.creator.require_auth();
+
+        // Only sweep after the vault has no outstanding stake.
+        if vault.staked != 0 {
+            return Err(Error::StakedRemaining);
+        }
+
+        let contract_addr = env.current_contract_address();
+        let client = token::Client::new(&env, &token_address);
+        let bal = client.balance(&contract_addr);
+        if bal > 0 {
+            client.transfer(&contract_addr, &vault.creator, &bal);
+        }
+        Ok(())
+    }
+
+    // ── internal helpers ────────────────────────────────────────────────
+
+
+    pub fn configure_window(env: Env, window: u64) {
+        env.storage().instance().set(&DataKey::DisputeWindow, &window);
+    }
+
+    pub fn dispute_milestone(env: Env, vault_id: String, creator: Address, index: u32) -> Result<(), Error> {
+        creator.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if vault.creator != creator {
+            return Err(Error::Unauthorized);
+        }
+        if index >= vault.milestones.len() {
+            return Err(Error::MilestoneIndexOutOfRange);
+        }
+
+        let mut milestone = vault.milestones.get(index).unwrap();
+        if !milestone.verified {
+            return Err(Error::MilestonesIncomplete);
+        }
+
+        let dispute_window: u64 = env.storage().instance().get(&DataKey::DisputeWindow).unwrap_or(86400);
+        let verified_at: u64 = env.storage().instance().get(&DataKey::CheckIn(index)).unwrap_or(0);
+        
+        if env.ledger().timestamp() > verified_at + dispute_window {
+            return Err(Error::DeadlinePassed);
+        }
+
+        milestone.verified = false;
+        vault.milestones.set(index, milestone);
+        
+        // Match upstream's storage format
+        env.storage().instance().set(&DataKey::Vault, &vault);
+
+        let event_name = soroban_sdk::Symbol::new(&env, "milestone_disputed");
+        env.events().publish((event_name, creator), index);
+        
+        Ok(())
+    }
+    fn load(env: &Env, vault_id: &String) -> Result<Vault, Error> {
+        let key = DataKey::Vault(vault_id.clone());
+        let vault = env
             .storage()
             .persistent()
             .get(&key)

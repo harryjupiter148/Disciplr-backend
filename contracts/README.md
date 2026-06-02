@@ -35,6 +35,7 @@ Implements the vault lifecycle that the backend models off-chain in
 | `claim` | When all milestones are verified, release funds to `success_destination`; `Active` -> `Completed`. |
 | `withdraw` | Cancel/refund an unfunded or unstarted vault to the creator; -> `Cancelled`. |
 | `get_vault` | Read-only accessor for the current vault record. |
+| `get_unverified_milestone_indices` | Returns `Vec<u32>` of indices for milestones that have not yet been verified, in ascending order. Used by the keeper job (`src/jobs/handlers.ts`) to determine slash targets without loading and filtering the full vault client-side. |
 
 ### Token allowlist policy
 
