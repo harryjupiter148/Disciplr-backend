@@ -1366,3 +1366,28 @@ fn test_check_in_milestone_due_date_boundaries() {
     let result = contract.check_in(0);
     assert!(result.is_ok());
 }
+
+#[test]
+fn test_check_in_idempotency() {
+    let env = TestEnv::default();
+    let contract = AccountabilityVaultContract::new(&env);
+
+    let milestone = Milestone {
+        due_date: 1000,
+        ..Default::default()
+    };
+
+    contract.add_milestone(&milestone);
+    env.ledger().set_timestamp(1000);
+
+    // First check_in - should succeed
+    let result1 = contract.check_in(0);
+    assert!(result1.is_ok());
+
+    // Second check_in on same milestone - should return typed error, NOT panic
+    let result2 = contract.check_in(0);
+    assert_eq!(result2, Err(ContractError::MilestoneAlreadyVerified));
+
+    // Verify no panic occurred
+    println!("✓ Idempotency test passed: MilestoneAlreadyVerified returned correctly");
+}
