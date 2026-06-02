@@ -5,7 +5,7 @@ members = [
 ]
 
 [workspace.dependencies]
-soroban-sdk = "23"
+soroban-sdk = "=23.0.1"
 
 [workspace.lints.rust]
 rust_2024_compatibility = "warn"
