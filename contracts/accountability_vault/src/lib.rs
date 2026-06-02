@@ -41,6 +41,10 @@ use soroban_sdk::{
     String, Symbol, Vec,
 };
 
+/// Maximum amount allowed for a single milestone.
+/// Prevents absurd i128 milestone stakes while keeping normal vault amounts usable.
+pub const MAX_AMOUNT_PER_MILESTONE: i128 = 1_000_000_000_000_000_000;
+
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone)]
@@ -231,7 +235,7 @@ impl AccountabilityVault {
 
         let mut sum: i128 = 0;
         for m in milestones.iter() {
-            if m.amount <= 0 {
+            if m.amount <= 0 || m.amount > MAX_AMOUNT_PER_MILESTONE {
                 return Err(Error::InvalidAmount);
             }
             if m.due_date > end_timestamp {
