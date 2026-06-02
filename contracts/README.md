@@ -64,10 +64,38 @@ addresses from the verifier set (or the optional oracle) have approved it.
 - The threshold must be ≥ 1 and ≤ `verifiers.len()`; otherwise `create_vault` returns
   `Error::InvalidThreshold`.
 
+#### Evidence Hash Binding
+
+`check_in` accepts an `evidence_hash: BytesN<32>` parameter — a 32-byte digest (e.g.
+SHA-256) of the off-chain evidence artifact (document, IPFS CID, etc.). When the
+approval threshold is reached, the hash is persisted alongside the check-in timestamp
+under `DataKey::CheckIn(index)` as a `(u64, BytesN<32>)` tuple and emitted in the
+`milestone_checked_in` event value so that the on-chain record is cryptographically bound
+to the off-chain evidence.
+
+```rust
+// event topics: ("milestone_checked_in", caller, source)
+// event value:  (milestone_index, evidence_hash)
+env.events().publish(
+    (String::from_str(&env, "milestone_checked_in"), caller, source),
+    (milestone_index, evidence_hash),
+);
+```
+
+The backend `submitCheckIn(vaultId, milestoneId, evidenceHash)` passes the hex-encoded
+hash, which is decoded to `BytesN<32>` before calling the contract.
+
 ### Arithmetic Safety
 
 The `create_vault` function validates that milestone amounts are positive and sum exactly to
 the declared `amount`, rejecting mismatches with `Error::AmountMismatch`.
+
+### Checked Milestone Access
+
+Contract code must not use `unwrap()` when reading milestones by caller-supplied indexes.
+Even when a nearby bounds check exists, use checked access such as
+`vault.milestones.get(index).ok_or(Error::MilestoneIndexOutOfRange)?` so future
+refactors continue to return typed contract errors instead of risking host-level panics.
 
 ### Error Types
 
@@ -95,6 +123,7 @@ the declared `amount`, rejecting mismatches with `Error::AmountMismatch`.
 | 20 | `NoVerifiers` | Empty verifier list |
 | 21 | `InvalidThreshold` | Threshold is 0 or exceeds verifier count |
 | 22 | `StakedRemaining` | Reclaim attempted while stake is non-zero |
+| 23 | `VaultDisputed` | Operation rejected because vault is in `Disputed` state |
 
 ### Performance & Gas Benchmarks
 
@@ -179,6 +208,21 @@ cd contracts/accountability_vault
 cargo test
 ```
 
+### Migration: API change (cancel_vault vs withdraw)
+
+- The contract API now exposes `cancel_vault(vault_id, creator)` for explicitly
+  cancelling an unfunded `Draft` vault. This path emits the `vault_cancelled`
+  event and performs no token transfers.
+- The `withdraw(vault_id, creator)` function has been restricted to the funded
+  `Active` refund case (vaults that were staked but never had any verified
+  check-ins). It performs a CEI-safe refund to the `creator` and emits
+  `vault_withdrawn`.
+- Backend callers must choose the appropriate method based on the vault's
+  current `status`: use `cancel_vault` for `Draft`, and `withdraw` for
+  `Active` refunding. The `vault_cancelled` topic and payload remain
+  compatible with the existing backend event parser.
+
+
 #### Formatting
 
 The workspace ships a `contracts/rustfmt.toml` config. Format all contract sources with:
@@ -212,7 +256,54 @@ The contract maintains comprehensive test coverage including:
 - Allowance-based staking (`stake_from`)
 - Oracle-driven milestone verification
 - Joint deadline extension (`extend_deadline`)
+- Disputed state: `admin_dispute` enters hold, `admin_resolve` returns to Active/Completed/Failed, `slash_on_miss` and `claim` blocked while disputed
 - Gas benchmarks with hard CPU/memory bounds
+- **Claim auth-chain assertions**: `env.auths()` snapshots verifying the recorded authorizer
+  matches the claim caller, separately for the creator path and the verifier path
+
+#### Auth-Chain Assertion Pattern
+
+The `claim` function may be called by either the vault creator or any member of the verifier
+set. Two dedicated tests in `test.rs` lock down this invariant using `env.auths()` snapshots
+rather than a blanket `mock_all_auths`:
+
+**Why `env.auths()`?**
+`env.auths()` returns the list of `(Address, AuthorizedInvocation)` pairs that were recorded
+during the most recent contract call. Asserting on this list proves that the contract called
+`Address::require_auth()` for exactly the address that was passed as `caller`, and not for a
+different address. This catches bugs where `require_auth()` is called on the wrong variable
+or is missing entirely.
+
+**How the tests work:**
+
+1. Setup (`create_vault`, `stake`, `check_in`) runs under `env.mock_all_auths()` so token
+   operations succeed without requiring real signatures.
+2. `claim` is invoked with either `creator` or `verifier` as the caller.
+3. `env.auths()` is inspected immediately after the call. The test asserts:
+   - Exactly one auth entry was recorded.
+   - The authorized address equals the claim caller.
+   - The authorized function matches `claim(vault_id, caller)` exactly.
+
+```rust
+// After contract.claim(&vault_id, &creator):
+let recorded = env.auths();
+assert_eq!(recorded.len(), 1);
+let (addr, invocation) = &recorded[0];
+assert_eq!(addr, &creator);
+assert_eq!(invocation.function, AuthorizedFunction::Contract((
+    contract_id.clone(),
+    Symbol::new(&env, "claim"),
+    (vault_id.clone(), creator.clone()).into_val(&env),
+)));
+```
+
+**Helper function:** `assert_claim_auth(env, contract_id, vault_id, caller)` encapsulates
+this check and is shared by both the creator and verifier path tests, keeping each test
+focused on the setup path that distinguishes them.
+
+**What is NOT tested here:** The tests do not assert on auth entries from `stake` or
+`check_in` because those calls happen in setup before the `env.auths()` snapshot is taken.
+`env.auths()` only reflects the most recent invocation.
 
 ### Deployment
 
@@ -256,3 +347,18 @@ Location: `accountability_vault/src/lib.rs` — `AccountabilityVault::reclaim_af
 ### License
 
 See main repository license file.
+
+## Accountability Vault - Key Behaviors
+
+### Timestamp Boundary Rules
+- `slash_on_miss`: 
+  - `env.ledger().timestamp() <= vault.end_timestamp` → Returns `DeadlineNotReached` (exact equality is **rejected**)
+  - `env.ledger().timestamp() > vault.end_timestamp` → Slash is executed
+- `check_in`:
+  - Exact equality (`timestamp == milestone.due_date`) is **allowed** and succeeds.
+
+### Check-in Idempotency (#502)
+- Calling `check_in` multiple times on the same milestone index returns `MilestoneAlreadyVerified` error on subsequent calls.
+- This behavior is **intentional** and expected by the backend (`eventParser.ts`).
+
+These rules are enforced through boundary and idempotency tests in `contracts/accountability_vault/src/test.rs`.
