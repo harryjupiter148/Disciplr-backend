@@ -22,20 +22,17 @@ export default [
     },
     rules: {
       ...tseslint.configs.recommended.rules,
-      'no-restricted-properties': [
-        'warn',
+      'no-restricted-imports': [
+        'error',
         {
-          object: 'process',
-          property: 'env',
-          message: 'Use getEnv() from src/config/env.ts instead of accessing process.env directly.',
+          paths: [
+            {
+              name: 'ts-node',
+              message: 'ts-node is dropped in favour of tsx and ts-jest. Please do not import or use it.',
+            },
+          ],
         },
       ],
-    },
-  },
-  {
-    files: ['src/config/env.ts'],
-    rules: {
-      'no-restricted-properties': 'off',
     },
   },
 ]
