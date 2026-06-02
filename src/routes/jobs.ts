@@ -10,12 +10,13 @@ import {
 import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { requireJson } from '../middleware/requireJson.js'
+import { JOBS_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 
 import { enqueueJobSchema } from '../lib/validation.js'
 
-
+const jobsJson = requireJson({ maxBytes: JOBS_JSON_MAX_BYTES })
 
 // Helpers
 const enqueueTypedJob = (
@@ -146,7 +147,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // POST /enqueue — manually trigger a background job (admin only, strict rate limit)
 
-  jobsRouter.post('/enqueue', enqueueLimiter, (req, res) => {
+  jobsRouter.post('/enqueue', jobsJson, enqueueLimiter, (req, res) => {
     const result = enqueueJobSchema.safeParse(req.body)
     if (!result.success) {
       // Fallback for tests in tests/jobs.test.ts

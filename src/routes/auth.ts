@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
 
 export const authRouter = Router();
+const authJson = requireJson({ maxBytes: AUTH_JSON_MAX_BYTES });
 
 const userIdOnlyLoginSchema = z.object({
   userId: z.string().uuid('userId must be a valid UUID'),
@@ -38,7 +39,7 @@ const formatAuthUser = (user: { id: string; role: UserRole; lastLoginAt: Date | 
 
 // ------------- Endpoints -------------
 
-authRouter.post('/register', requireJson, async (req, res, next) => {
+authRouter.post('/register', authJson, async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -52,7 +53,7 @@ authRouter.post('/register', requireJson, async (req, res, next) => {
     }
 })
 
-authRouter.post('/login', requireJson, async (req, res, next) => {
+authRouter.post('/login', authJson, async (req, res, next) => {
     // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
         const result = userIdOnlyLoginSchema.safeParse(req.body)
@@ -107,7 +108,7 @@ authRouter.post('/login', requireJson, async (req, res, next) => {
     }
 })
 
-authRouter.post('/refresh', requireJson, async (req, res, next) => {
+authRouter.post('/refresh', authJson, async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -123,6 +124,7 @@ authRouter.post('/refresh', requireJson, async (req, res, next) => {
 
 authRouter.post(
   "/logout",
+  authJson,
   authenticate,
   async (req: Request, res: Response) => {
     // 1. AuthService refresh token logout
