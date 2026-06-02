@@ -268,7 +268,121 @@ fn test_withdraw_draft_cancels() {
     assert_eq!(vault.status, VaultStatus::Cancelled);
 }
 
-// ── cross-feature: stake_from then oracle check_in then claim ────────────────
+// ── #486: reject creator == verifier (role separation invariant) ─────────────
+
+#[test]
+fn test_create_vault_creator_equals_verifier_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, _) = create_token(&env, &token_admin);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m"),
+            amount: 500,
+            due_date: 1_200,
+            verified: false,
+            released: false,
+        },
+    ];
+    let vault_id = String::from_str(&env, "v1");
+    // creator and verifier are the SAME address — must fail.
+    let result = contract.try_create_vault(
+        &vault_id,
+        &creator,
+        &creator, // same as creator!
+        &token,
+        &500,
+        &success,
+        &failure,
+        &1_200,
+        &milestones,
+        &guardian,
+    );
+    assert!(
+        matches!(result, Err(Ok(Error::CreatorIsVerifier))),
+        "expected CreatorIsVerifier, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_create_vault_distinct_creator_and_verifier_succeeds() {
+    // Sanity check: distinct addresses must NOT trigger the error.
+    let s = setup(&[100], &[500]);
+    // setup() itself calls create_vault with distinct creator/verifier.
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_ne!(vault.creator, vault.verifier, "creator and verifier must differ");
+}
+
+#[test]
+#[should_panic]
+fn test_create_vault_creator_equals_verifier_panics() {
+    // Same test via #[should_panic] for ergonomic coverage.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, _) = create_token(&env, &token_admin);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m"),
+            amount: 500,
+            due_date: 1_200,
+            verified: false,
+            released: false,
+        },
+    ];
+    let vault_id = String::from_str(&env, "v1");
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &creator, // same as creator — must panic
+        &token,
+        &500,
+        &success,
+        &failure,
+        &1_200,
+        &milestones,
+        &guardian,
+    );
+}
+
+// ── #486 guard: regression — ensure existing role-checked functions unaffected ─
+
+#[test]
+fn test_create_vault_with_roles_separate_then_stake_and_verify() {
+    // Full flow must still succeed with distinct creator and verifier.
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract.check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+    s.contract.claim(&s.vault_id, &s.creator);
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
 
 #[test]
 fn test_cancel_vault_then_stake_rejected_with_not_draft() {

@@ -32,6 +32,13 @@ Implements the vault lifecycle that the backend models off-chain in
 | `withdraw`      | Cancel/refund an unfunded or unstarted vault to the creator; -> `Cancelled`.                                                                                 |
 | `get_vault`     | Read-only accessor for the current vault record.                                                                                                             |
 
+### Role-separation invariant
+
+`create_vault` enforces that `creator != verifier`. Allowing the same address to
+fill both roles would let one party both stake funds *and* self-confirm milestones,
+completely undermining the accountability guarantee. Any attempt to create a vault
+where `creator == verifier` returns `Error::CreatorIsVerifier` (code 26).
+
 The `VaultStatus` enum (`Draft`/`Active`/`Completed`/`Failed`/`Cancelled`)
 mirrors `PersistedVault.status` in `src/types/vaults.ts`. Emitted events
 (`vault_created`, `vault_staked`, `milestone_checked_in`, `vault_slashed`,
