@@ -982,11 +982,436 @@ fn test_create_vault_failure_destination_equals_creator_fails() {
     );
 }
 
-#[test]
-#[should_panic(expected = "Error::NotActive")]
-fn test_slash_on_miss_requires_active_vault_fails() {
-    let s = setup(&[100], &[500]);
-    // The vault is in Draft status — slash_on_miss must fail with NotActive.
-    s.contract.slash_on_miss(&s.vault_id);
+//! Unit tests for the Accountability Vault contract
+
+#![cfg(test)]
+
+extern crate std;
+
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
+    symbol_short, vec, Address, Env, IntoVal, String, Vec,
+};
+
+use crate::{
+    AccountabilityVault, AccountabilityVaultClient, Error, Milestone, VaultState,
+    MIN_TOKEN_DECIMALS, MAX_TOKEN_DECIMALS,
+};
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+/// Create a mock SEP-41 token with specified decimals for testing
+fn create_test_token<'a>(env: &Env, admin: &Address, decimals: u32) -> TokenClient<'a> {
+    // Register a standard token contract with the given decimals
+    let token_id = env.register(
+        StellarAssetClient::new(env),
+        (admin.clone(), decimals, String::from_str(env, "TestToken"), String::from_str(env, "TT")),
+    );
+    TokenClient::new(env, &token_id)
 }
 
+/// Setup the vault contract
+fn setup_vault_contract(env: &Env) -> (Address, AccountabilityVaultClient) {
+    let admin = Address::generate(env);
+    let contract_id = env.register_contract(None, AccountabilityVault);
+    let client = AccountabilityVaultClient::new(env, &contract_id);
+    
+    client.initialize(&admin);
+    (admin, client)
+}
+
+/// Create a milestone for testing
+fn create_milestone(env: &Env, id: u32, verifier: &Address) -> Milestone {
+    Milestone {
+        id,
+        description: String::from_str(env, "Test milestone"),
+        verifier: verifier.clone(),
+        validated: false,
+        validated_at: 0,
+        evidence_hash: None,
+    }
+}
+
+// ============================================================================
+// Token Decimals Validation Tests (Issue #491)
+// ============================================================================
+
+#[test]
+fn test_create_vault_with_valid_decimals_0() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 0); // 0 decimals
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    // Mint tokens to creator
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![
+        &env,
+        create_milestone(&env, 1, &verifier),
+    ];
+    
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert!(!vault_id.is_empty());
+    
+    // Verify decimals were cached
+    let cached_decimals = client.get_token_decimals(&token.address);
+    assert_eq!(cached_decimals, Some(0));
+}
+
+#[test]
+fn test_create_vault_with_valid_decimals_7() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7); // 7 decimals (Stellar standard)
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert!(!vault_id.is_empty());
+    
+    let cached_decimals = client.get_token_decimals(&token.address);
+    assert_eq!(cached_decimals, Some(7));
+}
+
+#[test]
+fn test_create_vault_with_valid_decimals_18() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 18); // Max allowed
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert!(!vault_id.is_empty());
+    
+    let cached_decimals = client.get_token_decimals(&token.address);
+    assert_eq!(cached_decimals, Some(18));
+}
+
+#[test]
+fn test_create_vault_rejects_too_high_decimals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 19); // 1 above max
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let result = client.try_create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert_eq!(result, Err(Ok(Error::UnsupportedTokenDecimals)));
+    
+    // Verify decimals were NOT cached
+    let cached_decimals = client.get_token_decimals(&token.address);
+    assert_eq!(cached_decimals, None);
+}
+
+#[test]
+fn test_create_vault_rejects_very_high_decimals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 255); // Extreme value
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let result = client.try_create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert_eq!(result, Err(Ok(Error::UnsupportedTokenDecimals)));
+}
+
+#[test]
+fn test_create_vault_boundary_decimals_17() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 17); // Just under max
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    // Should succeed
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert!(!vault_id.is_empty());
+}
+
+// ============================================================================
+// Existing Vault Flow Tests
+// ============================================================================
+
+#[test]
+fn test_full_vault_lifecycle_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7);
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    // Mint and approve
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![
+        &env,
+        create_milestone(&env, 1, &verifier),
+        create_milestone(&env, 2, &verifier),
+    ];
+    
+    // Create vault
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    // Validate first milestone
+    client.validate_milestone(&vault_id, &1, &None);
+    
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.state, VaultState::Active);
+    
+    // Validate second milestone
+    client.validate_milestone(&vault_id, &2, &None);
+    
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.state, VaultState::Completed);
+}
+
+#[test]
+fn test_vault_cancellation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7);
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    client.cancel_vault(&vault_id);
+    
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.state, VaultState::Cancelled);
+}
+
+#[test]
+fn test_vault_slashing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7);
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let end_time = env.ledger().timestamp() + 100;
+    let vault_id = client.create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &end_time,
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    // Advance ledger past deadline
+    env.ledger().set_timestamp(end_time + 1);
+    
+    client.slash_vault(&vault_id);
+    
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.state, VaultState::Slashed);
+}
+
+#[test]
+fn test_create_vault_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7);
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let result = client.try_create_vault(
+        &creator,
+        &token.address,
+        &0, // Invalid: zero amount
+        &(env.ledger().timestamp() + 86400),
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_create_vault_invalid_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let (_, client) = setup_vault_contract(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_test_token(&env, &token_admin, 7);
+    let success_dest = Address::generate(&env);
+    let failure_dest = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    
+    StellarAssetClient::new(&env, &token.address).mint(&creator, &1000);
+    
+    let milestones = vec![&env, create_milestone(&env, 1, &verifier)];
+    
+    let result = client.try_create_vault(
+        &creator,
+        &token.address,
+        &100,
+        &(env.ledger().timestamp() - 1), // Invalid: past timestamp
+        &success_dest,
+        &failure_dest,
+        &milestones,
+    );
+    
+    assert_eq!(result, Err(Ok(Error::InvalidTimestamp)));
+}

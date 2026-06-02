@@ -94,6 +94,143 @@ If you need to update this budget as the contract grows:
 
 ## Backend integration
 
+These rules are enforced through boundary and idempotency tests in `contracts/accountability_vault/src/test.rs`.
+
+# Disciplr Smart Contracts
+
+## Accountability Vault
+
+### Overview
+
+The Accountability Vault contract enables users to create time-locked capital vaults with milestone-based accountability. Funds are released only when all milestones are validated by assigned verifiers.
+
+### Token Decimals Validation
+
+**Supported range: 0 to 18 decimals**
+
+The `create_vault` function validates that the deposited token's `decimals()` value falls within the supported range `[0, 18]`. Tokens with decimals outside this range are rejected with `Error::UnsupportedTokenDecimals`.
+
+#### Rationale
+
+1. **Backend Compatibility**: The backend service (`src/services/soroban.ts`) assumes a fixed decimals contract. Supporting arbitrary decimals would require dynamic scaling throughout the API.
+
+2. **JavaScript Precision**: JavaScript's `Number` type uses IEEE 754 double-precision floats, which lose integer precision beyond 2^53 (~15-16 decimal digits). Tokens with &gt;18 decimals could cause rounding errors in the frontend.
+
+3. **Ecosystem Standard**: The Stellar ecosystem standardizes on 7 decimals for native assets, and ERC-20 tokens on Ethereum cap at 18 decimals. This range covers all practical use cases.
+
+4. **Security**: Extremely high decimal values (e.g., 255) could be used in overflow attacks or to exploit precision loss in calculations.
+
+#### Error Handling
+
+| Error Code | Value | Condition |
+|------------|-------|-----------|
+| `UnsupportedTokenDecimals` | 400 | `token.decimals() &lt; 0 \|\| token.decimals() &gt; 18` |
+
+#### Example
+
+```rust
+// Valid: 7 decimals (Stellar native)
+let token = create_token(7);
+client.create_vault(&creator, &token, &100, ...); // ✓ Success
+
+// Invalid: 19 decimals
+let token = create_token(19);
+client.create_vault(&creator, &token, &100, ...); // ✗ UnsupportedTokenDecimals
+
+Constants
+pub const MIN_TOKEN_DECIMALS: u32 = 0;
+pub const MAX_TOKEN_DECIMALS: u32 = 18;
+
+Contract Methods
+| Method                      | Description                            | Auth Required         |
+| --------------------------- | -------------------------------------- | --------------------- |
+| `initialize(admin)`         | Set contract admin                     | Admin                 |
+| `create_vault(...)`         | Create new vault with token validation | Creator               |
+| `validate_milestone(...)`   | Validate a milestone                   | Verifier              |
+| `cancel_vault(vault_id)`    | Cancel vault and return funds          | Creator/Admin         |
+| `slash_vault(vault_id)`     | Slash vault after deadline             | Anyone (after expiry) |
+| `get_vault(vault_id)`       | Query vault state                      | None                  |
+| `get_token_decimals(token)` | Get cached token decimals              | None                  |
+
+
+Testing
+# Run all tests
+cargo test
+
+# Run only decimals validation tests
+cargo test test_create_vault -- decimals
+
+Deployment
+# Build
+cargo build --target wasm32-unknown-unknown --release
+
+# Deploy (testnet)
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/accountability_vault.wasm \
+  --source alice \
+  --network testnet
+
+
+Architecture
+  graph TD
+    A[User] -->|create_vault| B[AccountabilityVault]
+    B -->|validate decimals| C[TokenClient::decimals]
+    C -->|0-18| D[Accept]
+    C -->|>18| E[Reject: UnsupportedTokenDecimals]
+    D -->|transfer| F[Token Contract]
+    G[Verifier] -->|validate_milestone| B
+    B -->|all validated| H[Release to success_destination]
+    B -->|expired| I[Slash to failure_destination]
+
+
+---
+
+## 4. `src/services/soroban.ts` (Backend — Document Assumption)
+
+```typescript
+/**
+ * Soroban Service
+ * 
+ * Handles on-chain interactions with the Accountability Vault smart contract.
+ * 
+ * IMPORTANT: This service assumes all tokens use a fixed decimal precision.
+ * The smart contract enforces this by rejecting tokens with decimals outside
+ * [0, 18] in `create_vault`. See contracts/accountability_vault/src/lib.rs
+ * for the validation logic.
+ * 
+ * If you need to support tokens with different decimals, update both:
+ * 1. This service (dynamic scaling)
+ * 2. The smart contract (adjust MIN_TOKEN_DECIMALS / MAX_TOKEN_DECIMALS)
+ */
+
+import { Contract, SorobanRpc, TransactionBuilder, Networks } from '@stellar/stellar-sdk';
+
+// Fixed decimal assumption - matches contract validation
+// All amounts are handled as raw integer values (smallest unit)
+// Display formatting should divide by 10^decimals for UI
+const ASSUMED_DECIMALS = 7; // Stellar native standard
+
+export class SorobanService {
+  private rpc: SorobanRpc.Server;
+  private contract: Contract;
+  
+  constructor(contractId: string, rpcUrl: string) {
+    this.rpc = new SorobanRpc.Server(rpcUrl);
+    this.contract = new Contract(contractId);
+  }
+  
+  /**
+   * Create a vault on-chain
+   * 
+   * Note: The contract validates token decimals. If the token has
+   * unsupported decimals, the transaction will fail with
+   * Error::UnsupportedTokenDecimals (error code 400).
+   */
+  async createVault(params: CreateVaultParams): Promise<string> {
+    // ... existing implementation ...
+  }
+}
+
 `src/services/soroban.ts` calls `create_vault` via the Stellar SDK
 (`@stellar/stellar-sdk` v14). The Horizon listener
 (`src/services/horizonListener.ts`) and `src/services/eventParser.ts`

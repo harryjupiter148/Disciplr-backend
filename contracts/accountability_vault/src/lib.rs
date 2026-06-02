@@ -858,3 +858,438 @@ impl AccountabilityVault {
 
 #[cfg(test)]
 mod test;
+
+//! Accountability Vault Smart Contract
+//!
+//! Time-locked capital vaults with milestone-based accountability.
+//! Users deposit tokens that are released only when milestones are validated.
+
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, Vec,
+};
+
+// SEP-41 Token client for interacting with any compliant token
+use soroban_sdk::token::Client as TokenClient;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Minimum supported token decimals (0 = whole units only)
+pub const MIN_TOKEN_DECIMALS: u32 = 0;
+
+/// Maximum supported token decimals (18 = standard ERC-20 max)
+/// 
+/// Rationale: The backend's src/services/soroban.ts assumes a fixed
+/// decimals contract. Values above 18 could cause overflow in
+/// JavaScript's Number type (IEEE 754) and are uncommon in practice.
+/// Soroban itself caps at 18 decimals in the reference implementation.
+pub const MAX_TOKEN_DECIMALS: u32 = 18;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    // General errors (1XX)
+    AlreadyInitialized = 100,
+    NotInitialized = 101,
+    Unauthorized = 102,
+    
+    // Vault errors (2XX)
+    VaultNotFound = 200,
+    VaultAlreadyExists = 201,
+    InvalidAmount = 202,
+    InvalidTimestamp = 203,
+    InvalidDestination = 204,
+    
+    // Milestone errors (3XX)
+    MilestoneNotFound = 300,
+    MilestoneAlreadyValidated = 301,
+    InvalidVerifier = 302,
+    
+    // Token errors (4XX)
+    /// Token decimals are outside the supported range [0, 18].
+    /// This prevents integration issues with the backend's fixed-decimals
+    /// assumptions and avoids JavaScript Number overflow.
+    UnsupportedTokenDecimals = 400,
+    TokenTransferFailed = 401,
+    InsufficientBalance = 402,
+}
+
+// ============================================================================
+// Data Types
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Milestone {
+    pub id: u32,
+    pub description: String,
+    pub verifier: Address,
+    pub validated: bool,
+    pub validated_at: u64,
+    pub evidence_hash: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Vault {
+    pub id: String,
+    pub creator: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub end_timestamp: u64,
+    pub success_destination: Address,
+    pub failure_destination: Address,
+    pub milestones: Vec<Milestone>,
+    pub state: VaultState,
+    pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VaultState {
+    Active,
+    Completed,
+    Cancelled,
+    Slashed,
+}
+
+// ============================================================================
+// Storage Keys
+// ============================================================================
+
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    Vault(String),
+    VaultCount,
+    TokenDecimals(Address), // Cache validated token decimals
+}
+
+// ============================================================================
+// Contract Implementation
+// ============================================================================
+
+#[contract]
+pub struct AccountabilityVault;
+
+#[contractimpl]
+impl AccountabilityVault {
+    // =====================================================================
+    // Initialization
+    // =====================================================================
+    
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        
+        env.events().publish(
+            (symbol_short!("init"), admin.clone()),
+            env.ledger().timestamp(),
+        );
+        
+        Ok(())
+    }
+
+    // =====================================================================
+    // Vault Creation (with token decimals validation)
+    // =====================================================================
+
+    /// Create a new accountability vault.
+    ///
+    /// # Arguments
+    /// * `creator` - The address creating the vault (must authenticate)
+    /// * `token` - The SEP-41 token contract address to deposit
+    /// * `amount` - The amount of tokens to lock
+    /// * `end_timestamp` - Unix timestamp when the vault expires
+    /// * `success_destination` - Address to receive funds on success
+    /// * `failure_destination` - Address to receive funds on failure
+    /// * `milestones` - List of milestones that must be validated
+    ///
+    /// # Errors
+    /// * `Error::UnsupportedTokenDecimals` - If token.decimals() is not in [0, 18]
+    /// * `Error::InvalidAmount` - If amount is <= 0
+    /// * `Error::InvalidTimestamp` - If end_timestamp is in the past
+    pub fn create_vault(
+        env: Env,
+        creator: Address,
+        token: Address,
+        amount: i128,
+        end_timestamp: u64,
+        success_destination: Address,
+        failure_destination: Address,
+        milestones: Vec<Milestone>,
+    ) -> Result<String, Error> {
+        // Authentication
+        creator.require_auth();
+        
+        // Validate basic inputs
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        
+        let current_time = env.ledger().timestamp();
+        if end_timestamp <= current_time {
+            return Err(Error::InvalidTimestamp);
+        }
+        
+        // =================================================================
+        // TOKEN DECIMALS VALIDATION (Issue #491)
+        // =================================================================
+        // Query the token's decimals via SEP-41 interface.
+        // Reject tokens with unsupported decimals to prevent:
+        // 1. Backend integration issues (src/services/soroban.ts assumes fixed decimals)
+        // 2. JavaScript Number overflow (IEEE 754 precision loss above ~15 digits)
+        // 3. UI display inconsistencies
+        // =================================================================
+        
+        let token_client = TokenClient::new(&env, &token);
+        let decimals = token_client.decimals();
+        
+        if decimals < MIN_TOKEN_DECIMALS || decimals > MAX_TOKEN_DECIMALS {
+            return Err(Error::UnsupportedTokenDecimals);
+        }
+        
+        // Cache the validated decimals for future reference
+        env.storage().persistent().set(
+            &DataKey::TokenDecimals(token.clone()),
+            &decimals,
+        );
+        
+        // Generate vault ID
+        let vault_count: u64 = env.storage().persistent()
+            .get(&DataKey::VaultCount)
+            .unwrap_or(0);
+        let vault_id = format!("vault_{}", vault_count);
+        
+        // Transfer tokens from creator to vault
+        token_client.transfer(&creator, &env.current_contract_address(), &amount);
+        
+        // Create vault record
+        let vault = Vault {
+            id: vault_id.clone(),
+            creator,
+            token,
+            amount,
+            end_timestamp,
+            success_destination,
+            failure_destination,
+            milestones,
+            state: VaultState::Active,
+            created_at: current_time,
+        };
+        
+        // Store vault
+        env.storage().persistent().set(&DataKey::Vault(vault_id.clone()), &vault);
+        env.storage().persistent().set(&DataKey::VaultCount, &(vault_count + 1));
+        
+        // Emit event
+        env.events().publish(
+            (symbol_short!("vault_created"), vault_id.clone()),
+            (creator, token, amount),
+        );
+        
+        Ok(vault_id)
+    }
+
+    // =====================================================================
+    // Milestone Validation
+    // =====================================================================
+
+    pub fn validate_milestone(
+        env: Env,
+        vault_id: String,
+        milestone_id: u32,
+        evidence_hash: Option<String>,
+    ) -> Result<(), Error> {
+        let mut vault: Vault = env.storage().persistent()
+            .get(&DataKey::Vault(vault_id.clone()))
+            .ok_or(Error::VaultNotFound)?;
+        
+        // Only active vaults can have milestones validated
+        if vault.state != VaultState::Active {
+            return Err(Error::Unauthorized);
+        }
+        
+        // Find milestone
+        let milestone = vault.milestones.iter()
+            .find(|m| m.id == milestone_id)
+            .ok_or(Error::MilestoneNotFound)?;
+        
+        // Verify the caller is the assigned verifier
+        milestone.verifier.require_auth();
+        
+        if milestone.validated {
+            return Err(Error::MilestoneAlreadyValidated);
+        }
+        
+        // Update milestone
+        let updated_milestones: Vec<Milestone> = vault.milestones.iter()
+            .map(|m| {
+                if m.id == milestone_id {
+                    Milestone {
+                        id: m.id,
+                        description: m.description.clone(),
+                        verifier: m.verifier.clone(),
+                        validated: true,
+                        validated_at: env.ledger().timestamp(),
+                        evidence_hash: evidence_hash.clone(),
+                    }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+        
+        vault.milestones = updated_milestones;
+        
+        // Check if all milestones are validated
+        let all_validated = vault.milestones.iter().all(|m| m.validated);
+        if all_validated {
+            vault.state = VaultState::Completed;
+            
+            // Transfer funds to success destination
+            let token_client = TokenClient::new(&env, &vault.token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &vault.success_destination,
+                &vault.amount,
+            );
+            
+            env.events().publish(
+                (symbol_short!("vault_completed"), vault_id.clone()),
+                (vault.success_destination.clone(), vault.amount),
+            );
+        }
+        
+        env.storage().persistent().set(&DataKey::Vault(vault_id.clone()), &vault);
+        
+        env.events().publish(
+            (symbol_short!("milestone_validated"), vault_id),
+            (milestone_id, milestone.verifier),
+        );
+        
+        Ok(())
+    }
+
+    // =====================================================================
+    // Vault Cancellation
+    // =====================================================================
+
+    pub fn cancel_vault(env: Env, vault_id: String) -> Result<(), Error> {
+        let mut vault: Vault = env.storage().persistent()
+            .get(&DataKey::Vault(vault_id.clone()))
+            .ok_or(Error::VaultNotFound)?;
+        
+        // Only creator or admin can cancel
+        let caller = env.current_contract_address(); // In practice, get from auth context
+        if vault.creator != caller {
+            // Check admin
+            let admin: Address = env.storage().instance()
+                .get(&DataKey::Admin)
+                .ok_or(Error::NotInitialized)?;
+            if admin != caller {
+                return Err(Error::Unauthorized);
+            }
+        }
+        
+        vault.creator.require_auth();
+        
+        if vault.state != VaultState::Active {
+            return Err(Error::Unauthorized);
+        }
+        
+        vault.state = VaultState::Cancelled;
+        
+        // Return funds to creator
+        let token_client = TokenClient::new(&env, &vault.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &vault.creator,
+            &vault.amount,
+        );
+        
+        env.storage().persistent().set(&DataKey::Vault(vault_id.clone()), &vault);
+        
+        env.events().publish(
+            (symbol_short!("vault_cancelled"), vault_id),
+            (vault.creator, vault.amount),
+        );
+        
+        Ok(())
+    }
+
+    // =====================================================================
+    // Slashing (on missed deadline)
+    // =====================================================================
+
+    pub fn slash_vault(env: Env, vault_id: String) -> Result<(), Error> {
+        let mut vault: Vault = env.storage().persistent()
+            .get(&DataKey::Vault(vault_id.clone()))
+            .ok_or(Error::VaultNotFound)?;
+        
+        if vault.state != VaultState::Active {
+            return Err(Error::Unauthorized);
+        }
+        
+        let current_time = env.ledger().timestamp();
+        if current_time <= vault.end_timestamp {
+            return Err(Error::InvalidTimestamp);
+        }
+        
+        vault.state = VaultState::Slashed;
+        
+        // Transfer funds to failure destination
+        let token_client = TokenClient::new(&env, &vault.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &vault.failure_destination,
+            &vault.amount,
+        );
+        
+        env.storage().persistent().set(&DataKey::Vault(vault_id.clone()), &vault);
+        
+        env.events().publish(
+            (symbol_short!("vault_slashed"), vault_id),
+            (vault.failure_destination, vault.amount),
+        );
+        
+        Ok(())
+    }
+
+    // =====================================================================
+    // Query Functions
+    // =====================================================================
+
+    pub fn get_vault(env: Env, vault_id: String) -> Result<Vault, Error> {
+        env.storage().persistent()
+            .get(&DataKey::Vault(vault_id))
+            .ok_or(Error::VaultNotFound)
+    }
+
+    pub fn get_vault_count(env: Env) -> u64 {
+        env.storage().persistent()
+            .get(&DataKey::VaultCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_token_decimals(env: Env, token: Address) -> Option<u32> {
+        env.storage().persistent()
+            .get(&DataKey::TokenDecimals(token))
+    }
+
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage().instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+}
