@@ -101,6 +101,21 @@ jobs:
       - run: npm run build
 ```
 
+## Soroban contract CI coverage
+
+This repository also runs Soroban contract verification in CI through `.github/workflows/ci.yml`.
+
+The CI workflow now includes a separate `contracts` job that:
+
+- checks out the repository
+- sets up the Rust toolchain
+- caches the Cargo registry and the Soroban contract `target` artifacts
+- installs `cargo-contract`
+- builds `contracts/accountability_vault`
+- runs `cargo test` for `contracts/accountability_vault/src/test.rs`
+
+This keeps on-chain contract code verified alongside the existing Node/TypeScript suite.
+
 ## Rollback strategy
 
 - Immediate rollback path for the last batch:
