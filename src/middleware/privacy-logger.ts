@@ -1,8 +1,12 @@
 import { Request, Response, NextFunction } from 'express'
+import { Buffer } from 'node:buffer'
+import { isIP } from 'node:net'
 import { logger, withCorrelationId, getOrGenerateCorrelationId } from './logger.js'
 import { utcNow } from '../utils/timestamps.js'
 
-const SENSITIVE_FIELDS = new Set([
+export const REDACTION_MARKER = '***REDACTED***'
+
+export const SENSITIVE_KEYS = new Set([
     'email',
     'password',
     'token',
@@ -20,15 +24,33 @@ const SENSITIVE_FIELDS = new Set([
     'x-api-key'
 ])
 
+const PII_VALUE_PATTERNS = [
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+]
+
 export function shouldRedact(key: string): boolean {
-    return SENSITIVE_FIELDS.has(key.toLowerCase())
+    return SENSITIVE_KEYS.has(key.toLowerCase())
 }
 
-export function redact(value: any, seen = new WeakSet()): any {
+function shouldRedactValue(value: string): boolean {
+    return PII_VALUE_PATTERNS.some(pattern => pattern.test(value))
+}
+
+type RequestWithPrivacyContext = Request & {
+    correlationId?: string
+    logger?: ReturnType<typeof withCorrelationId>
+}
+
+export function redact(value: unknown, seen = new WeakSet<object>()): unknown {
     if (value === null || value === undefined) {
         return value
     }
     
+    if (typeof value === 'string') {
+        return shouldRedactValue(value) ? REDACTION_MARKER : value
+    }
+
     // Primitive values
     if (typeof value !== 'object') {
         return value
@@ -55,10 +77,10 @@ export function redact(value: any, seen = new WeakSet()): any {
         return '[Buffer]'
     }
     
-    const result: Record<string, any> = {}
+    const result: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(value)) {
         if (shouldRedact(k)) {
-            result[k] = '***REDACTED***'
+            result[k] = REDACTION_MARKER
         } else {
             result[k] = redact(v, seen)
         }
@@ -90,8 +112,9 @@ export const privacyLogger = (req: Request, _res: Response, next: NextFunction) 
     const url = req.url
 
     // Store correlation ID and logger on request for downstream handlers
-    ;(req as any).correlationId = correlationId
-    ;(req as any).logger = privacyLog
+    const requestWithContext = req as RequestWithPrivacyContext
+    requestWithContext.correlationId = correlationId
+    requestWithContext.logger = privacyLog
 
     // Redact sensitive fields before logging
     // (Pino will also redact based on its configuration, but we do it here
@@ -122,14 +145,21 @@ export const privacyLogger = (req: Request, _res: Response, next: NextFunction) 
 }
 
 export function maskIp(ip: string): string {
-    if (ip.includes(':')) {
-        // IPv6
-        return ip.split(':').slice(0, 3).join(':') + ':xxxx:xxxx:xxxx:xxxx:xxxx'
+    if (isIP(ip) === 6) {
+        const [left, right = ''] = ip.split('::')
+        const leftGroups = left ? left.split(':') : []
+        const rightGroups = right ? right.split(':') : []
+        const missingGroups = Math.max(0, 8 - leftGroups.length - rightGroups.length)
+        const groups = right
+            ? [...leftGroups, ...Array(missingGroups).fill('0'), ...rightGroups]
+            : leftGroups
+        return `${groups[0]}:${groups[1]}:${groups[2]}:xxxx:xxxx:xxxx:xxxx:xxxx`
     }
-    // IPv4
-    const parts = ip.split('.')
-    if (parts.length === 4) {
+
+    if (isIP(ip) === 4) {
+        const parts = ip.split('.')
         return `${parts[0]}.${parts[1]}.x.x`
     }
+
     return 'x.x.x.x'
 }

@@ -261,6 +261,19 @@ Coverage includes:
 - ✅ Pino JSON structure verification
 - ✅ PII leakage regression tests
 
+### Property-Based Invariants
+
+`src/tests/privacy-logger.test.ts` also uses `fast-check` with at least 100
+generated cases per property to enforce:
+
+- Sensitive keys are redacted at every nesting depth.
+- Safe objects without sensitive keys or PII-pattern values remain deep-equal.
+- `redact()` never mutates its input.
+- Email-shaped and JWT-shaped values are redacted regardless of key name.
+- Array elements are recursively redacted into a new array.
+- Structured privacy log events contain only the documented key set.
+- IPv4 masks keep the first two octets; IPv6 masks keep the first three groups.
+
 ## Compliance
 
 This logging architecture supports compliance with:

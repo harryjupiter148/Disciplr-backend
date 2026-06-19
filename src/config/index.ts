@@ -2,6 +2,16 @@ import { initEnv, getEnv, type Env, type EnvWarning } from './env.js'
 
 export { initEnv, getEnv, type Env, type EnvWarning }
 
+export const config = {
+  nodeEnv: process.env.NODE_ENV ?? 'development',
+  logLevel: process.env.LOG_LEVEL ?? 'info',
+  serviceName: process.env.SERVICE_NAME ?? 'disciplr-backend',
+  corsOrigins: parseCorsOrigins(
+    process.env.CORS_ORIGINS,
+    process.env.NODE_ENV ?? 'development',
+  ),
+}
+
 /**
  * Resolves the list of allowed CORS origins from the CORS_ORIGINS env var.
  */
