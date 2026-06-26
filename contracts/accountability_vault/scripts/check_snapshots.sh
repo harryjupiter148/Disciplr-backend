@@ -15,20 +15,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRACT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SNAPSHOT_DIR="${CONTRACT_DIR}/test_snapshots"
 
-# ── 1. Run tests to regenerate snapshots into a temp directory ─────────────────
-TMPDIR_SNAPSHOTS="$(mktemp -d)"
-trap 'rm -rf "${TMPDIR_SNAPSHOTS}"' EXIT
+# ── 1. Copy the committed snapshot tree, then regenerate in place ──────────────
+#
+# soroban-sdk v23 writes snapshots to a hard-coded `test_snapshots/` path under
+# the crate, so SOROBAN_TEST_SNAPSHOT_DIR is not honored. Keep a temp copy of the
+# committed tree before running tests, then diff it against the regenerated files.
+EXPECTED_SNAPSHOTS="$(mktemp -d)"
+trap 'rm -rf "${EXPECTED_SNAPSHOTS}"' EXIT
+cp -R "${SNAPSHOT_DIR}/." "${EXPECTED_SNAPSHOTS}/"
 
 echo "Running cargo test in ${CONTRACT_DIR} ..."
 (
   cd "${CONTRACT_DIR}"
-  SOROBAN_TEST_SNAPSHOT_DIR="${TMPDIR_SNAPSHOTS}" cargo test 2>&1
+  cargo test 2>&1
 )
 
 # ── 2. Regen mode: overwrite committed snapshots and exit ──────────────────────
 if [[ "${REGEN:-0}" == "1" ]]; then
-  echo "REGEN=1: copying fresh snapshots to ${SNAPSHOT_DIR} ..."
-  cp -r "${TMPDIR_SNAPSHOTS}/." "${SNAPSHOT_DIR}/"
+  echo "REGEN=1: snapshots regenerated in ${SNAPSHOT_DIR}."
   echo "Done. Commit the updated snapshots."
   exit 0
 fi
@@ -36,7 +40,7 @@ fi
 # ── 3. Check mode: diff fresh snapshots against committed ones ─────────────────
 echo "Diffing fresh snapshots against committed snapshots ..."
 
-DIFF_OUTPUT="$(diff -rq --exclude='*.tmp' "${SNAPSHOT_DIR}" "${TMPDIR_SNAPSHOTS}" 2>&1 || true)"
+DIFF_OUTPUT="$(diff -rq --exclude='*.tmp' "${EXPECTED_SNAPSHOTS}" "${SNAPSHOT_DIR}" 2>&1 || true)"
 
 if [[ -z "${DIFF_OUTPUT}" ]]; then
   echo "OK: snapshots are stable — no drift detected."
@@ -48,7 +52,7 @@ echo "SNAPSHOT DRIFT DETECTED:"
 echo "${DIFF_OUTPUT}"
 echo ""
 echo "To inspect the full diff:"
-echo "  diff -r ${SNAPSHOT_DIR} ${TMPDIR_SNAPSHOTS}"
+echo "  diff -r ${EXPECTED_SNAPSHOTS} ${SNAPSHOT_DIR}"
 echo ""
 echo "To update committed snapshots:"
 echo "  REGEN=1 ./scripts/check_snapshots.sh"
