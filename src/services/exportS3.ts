@@ -54,14 +54,14 @@ export function resetPresigner(): void {
  * Stream-upload `buffer` to S3 under `key`.
  * Uses @aws-sdk/lib-storage for multipart-safe, streaming uploads.
  */
-export async function uploadToS3(config: S3Config, key: string, buffer: Buffer, contentType: string): Promise<void> {
+export async function uploadToS3(config: S3Config, key: string, data: Buffer | Readable, contentType: string): Promise<void> {
   const client = _clientFactory(config.region)
   const upload = new Upload({
     client,
     params: {
       Bucket: config.bucket,
       Key: key,
-      Body: Readable.from(buffer),
+      Body: data instanceof Buffer ? Readable.from(data) : data,
       ContentType: contentType,
       ContentDisposition: `attachment; filename="${key.split('/').pop()}"`,
     },

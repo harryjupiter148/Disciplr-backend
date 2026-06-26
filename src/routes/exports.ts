@@ -47,7 +47,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
     const format = (req.query.format ?? 'json') as string
     const scope = (req.query.scope ?? 'all') as string
 
-    const validFormats = ['csv', 'json']
+    const validFormats = ['csv', 'json', 'ndjson']
     const validScopes = ['vaults', 'transactions', 'analytics', 'all']
 
     if (!validFormats.includes(format) || !validScopes.includes(scope)) {
