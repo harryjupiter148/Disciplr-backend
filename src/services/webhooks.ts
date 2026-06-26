@@ -1,5 +1,18 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { retryWithBackoff } from '../utils/retry.js'
+import { db } from '../db/index.js'
+
+export interface WebhookDeadLetter {
+  id: string
+  subscriber_id: string
+  event_id: string
+  event_type: string
+  payload: WebhookDeliveryPayload
+  last_error: string
+  attempts: number
+  failed_at: string
+  replayed_at: string | null
+}
 
 export interface WebhookSubscriber {
   id: string
@@ -206,15 +219,63 @@ export const dispatchWebhookEvent = async (
         }
       } catch (err: any) {
         console.error(`[Webhooks] delivery failed for subscriber ${subscriber.id}:`, err?.message)
+        const error = err?.message ?? 'Unknown error'
+        await deadLetter(subscriber.id, payload, error, attempts)
         return {
           subscriberId: subscriber.id,
           url: subscriber.url,
           statusCode: lastStatusCode,
           success: false,
-          error: err?.message ?? 'Unknown error',
+          error,
           attempts,
         }
       }
     }),
   )
+}
+
+const deadLetter = async (
+  subscriberId: string,
+  payload: WebhookDeliveryPayload,
+  lastError: string,
+  attempts: number,
+): Promise<void> => {
+  try {
+    await db('webhook_dead_letters').insert({
+      subscriber_id: subscriberId,
+      event_id: payload.eventId,
+      event_type: payload.eventType,
+      payload,
+      last_error: lastError,
+      attempts,
+    })
+  } catch (err: any) {
+    console.error(`[Webhooks] failed to persist dead letter:`, err?.message)
+  }
+}
+
+export const replayDeadLetter = async (
+  id: string,
+): Promise<{ replayed: boolean; subscriberId?: string; error?: string }> => {
+  const row = await db('webhook_dead_letters').where({ id, replayed_at: null }).first()
+  if (!row) {
+    return { replayed: false, error: 'Dead letter not found or already replayed' }
+  }
+
+  const subscriber = subscribers.get(row.subscriber_id)
+  if (!subscriber) {
+    return { replayed: false, error: 'Subscriber not registered' }
+  }
+
+  if (!isUrlAllowed(subscriber.url)) {
+    return { replayed: false, error: 'URL no longer allowed' }
+  }
+
+  try {
+    await deliverOnce(subscriber, row.payload)
+    await db('webhook_dead_letters').where({ id }).update({ replayed_at: new Date().toISOString() })
+    return { replayed: true, subscriberId: subscriber.id }
+  } catch (err: any) {
+    return { replayed: false, error: err?.message ?? 'Delivery failed' }
+  }
 }
