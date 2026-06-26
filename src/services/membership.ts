@@ -10,6 +10,30 @@ export class LastAdminError extends Error {
   }
 }
 
+export class InvitationNotFoundError extends Error {
+  constructor() {
+    super('Invitation not found.')
+    this.name = 'InvitationNotFoundError'
+  }
+}
+
+export class InvitationAcceptedError extends Error {
+  constructor() {
+    super('Accepted invitations cannot be modified.')
+    this.name = 'InvitationAcceptedError'
+  }
+}
+
+type OrgInvitation = {
+  id: string
+  org_id: string
+  email: string
+  token_hash: string
+  expires_at: Date | string
+  accepted_at: Date | string | null
+  revoked_at?: Date | string | null
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const isAdminRole = (role: string): boolean =>
@@ -157,6 +181,66 @@ export const updateMemberRole = async (
     })
     .update({ role: newRole })
     .returning('*')
+
+  return updated
+}
+
+// ─── Invitations ─────────────────────────────────────────────────────────────
+
+const getOrgInvitation = async (
+  orgId: string,
+  invitationId: string,
+): Promise<OrgInvitation> => {
+  const invitation = await db('org_invitations')
+    .where({ id: invitationId, org_id: orgId })
+    .first()
+
+  if (!invitation) {
+    throw new InvitationNotFoundError()
+  }
+
+  return invitation
+}
+
+export const resendInvitation = async (
+  orgId: string,
+  invitationId: string,
+  tokenHash: string,
+  expiresAt: Date,
+): Promise<OrgInvitation> => {
+  const invitation = await getOrgInvitation(orgId, invitationId)
+
+  if (invitation.accepted_at) {
+    throw new InvitationAcceptedError()
+  }
+
+  const [updated] = await db('org_invitations')
+    .where({ id: invitationId, org_id: orgId })
+    .update({
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+      revoked_at: null,
+    })
+    .returning(['id', 'org_id', 'email', 'expires_at', 'accepted_at', 'revoked_at'])
+
+  return updated
+}
+
+export const revokeInvitation = async (
+  orgId: string,
+  invitationId: string,
+  revokedAt = new Date(),
+): Promise<OrgInvitation> => {
+  const invitation = await getOrgInvitation(orgId, invitationId)
+
+  if (invitation.accepted_at) {
+    throw new InvitationAcceptedError()
+  }
+
+  const [updated] = await db('org_invitations')
+    .where({ id: invitationId, org_id: orgId })
+    .update({ revoked_at: revokedAt })
+    .returning(['id', 'org_id', 'email', 'expires_at', 'accepted_at', 'revoked_at'])
 
   return updated
 }
