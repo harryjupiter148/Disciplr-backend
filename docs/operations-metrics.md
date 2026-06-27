@@ -54,6 +54,10 @@ scrape_configs:
 
 All emitted gauges carry only aggregate dimensions — no tenant, organisation, or user-identifying labels are present. This prevents leaking per-tenant queue depths or request volumes through the metrics endpoint.
 
+### See Also
+
+For SLO targets, alert rules, remediation procedures, and on-call guidance, see the **[On-Call SLO and Alerting Runbook](runbooks/on-call-slo.md)**. This runbook defines SLOs for job queue depth, DB connection pool, and listener lag, with Prometheus alert rules and escalation procedures.
+
 ## Security & Compliance
 
 ### 1. Authorization & Access Control
