@@ -7,7 +7,13 @@ import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService, DeleteResult } from '../services/user.service.js'
 import { forceRevokeUserSessions } from '../services/session.js'
-import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
+import {
+  createAuditLog,
+  exportAuditLogsForOrganization,
+  getAuditLogById,
+  listAuditLogs,
+  verifyAuditLogChain,
+} from '../lib/audit-logs.js'
 import { cancelVaultById } from '../services/vaultStore.js'
 import { getDBHealthMetrics } from '../services/dbMetrics.js'
 import {
@@ -355,6 +361,39 @@ adminRouter.get(
   } catch (error) {
     console.error('Error fetching audit logs:', error)
     res.status(500).json({ error: 'Failed to fetch audit logs' })
+  }
+})
+
+adminRouter.get('/audit-logs/organizations/:organizationId/export', async (req, res) => {
+  try {
+    const { organizationId } = req.params
+    const auditExport = await exportAuditLogsForOrganization(organizationId)
+
+    res.status(200).json(auditExport)
+  } catch (error) {
+    console.error('Error exporting organization audit logs:', error)
+    res.status(500).json({ error: 'Failed to export audit logs' })
+  }
+})
+
+adminRouter.get('/audit-logs/organizations/:organizationId/verify', async (req, res) => {
+  try {
+    const result = await verifyAuditLogChain(req.params.organizationId)
+    res.status(result.verified ? 200 : 409).json(result)
+  } catch (error) {
+    console.error('Error verifying organization audit log chain:', error)
+    res.status(500).json({ error: 'Failed to verify audit log chain' })
+  }
+})
+
+adminRouter.post('/audit-logs/verify', async (req, res) => {
+  try {
+    const organizationId = typeof req.body?.organization_id === 'string' ? req.body.organization_id : null
+    const result = await verifyAuditLogChain(organizationId)
+    res.status(result.verified ? 200 : 409).json(result)
+  } catch (error) {
+    console.error('Error verifying audit log chain:', error)
+    res.status(500).json({ error: 'Failed to verify audit log chain' })
   }
 })
 
