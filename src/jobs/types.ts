@@ -5,9 +5,7 @@ export const JOB_TYPES = [
   'oracle.call',
   'analytics.recompute',
   'export.generate',
-  'sessions.cleanup',
-  'outbox.relay',
-  'embeddings.reindex',
+  'vault.reconcile',
 ] as const
 
 export type JobType = (typeof JOB_TYPES)[number]
@@ -45,15 +43,9 @@ export interface ExportGenerateJobPayload {
   exportJobId: string
 }
 
-export interface SessionsCleanupJobPayload {
+export interface VaultReconcileJobPayload {
+  vaultIds?: string[]
   batchSize?: number
-}
-
-export interface OutboxRelayJobPayload {}
-
-export interface EmbeddingsReindexJobPayload {
-  batchSize?: number
-  maxBatchesPerRun?: number
 }
 
 export interface JobPayloadByType {
@@ -63,9 +55,7 @@ export interface JobPayloadByType {
   'oracle.call': OracleCallJobPayload
   'analytics.recompute': AnalyticsRecomputeJobPayload
   'export.generate': ExportGenerateJobPayload
-  'sessions.cleanup': SessionsCleanupJobPayload
-  'outbox.relay': OutboxRelayJobPayload
-  'embeddings.reindex': EmbeddingsReindexJobPayload
+  'vault.reconcile': VaultReconcileJobPayload
 }
 
 export interface JobContext {
@@ -143,6 +133,10 @@ export const isPayloadForJobType = (
       )
     case 'export.generate':
       return isNonEmptyString(payload.exportJobId)
+    case 'vault.reconcile':
+      return (
+        (payload.vaultIds === undefined || Array.isArray(payload.vaultIds)) &&
+        (payload.batchSize === undefined || typeof payload.batchSize === 'number')
     case 'sessions.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
     case 'outbox.relay':

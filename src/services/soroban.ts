@@ -430,6 +430,19 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  getVault(
+    config: SorobanConfig,
+    vaultId: string,
+  ): Promise<OnChainVaultState | null>
+}
+
+export interface OnChainVaultState {
+  vault_id: string
+  amount: string
+  verifier: string
+  success_destination: string
+  failure_destination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
   submitStake(
     config: SorobanConfig,
     args: Record<string, unknown>,
@@ -604,6 +617,42 @@ export const createDefaultSorobanClient = (
       pool,
     )
   },
+  async getVault(config, vaultId) {
+    const {
+      Contract,
+      rpc: SorobanRpc,
+      nativeToScVal,
+      scValToNative,
+    } = await import('@stellar/stellar-sdk')
+
+    const server = new SorobanRpc.Server(config.rpcUrl)
+    const contract = new Contract(config.contractId)
+
+    try {
+      const callOp = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
+
+      const result = await server.simulateTransaction(callOp)
+
+      if (result.result === undefined || result.result === null) {
+        return null
+      }
+
+      const decoded = scValToNative(result.result)
+
+      return {
+        vault_id: decoded.vault_id || vaultId,
+        amount: decoded.amount || '0',
+        verifier: decoded.verifier || '',
+        success_destination: decoded.success_destination || '',
+        failure_destination: decoded.failure_destination || '',
+        status: decoded.status || 'active',
+      }
+    } catch (error) {
+      log('error', 'soroban.get_vault_error', { vaultId, error: error instanceof Error ? error.message : 'Unknown error' })
+      return null
+    }
+  },
+}
 })
 
 export const defaultSorobanClient: SorobanClient = createDefaultSorobanClient()
@@ -619,6 +668,7 @@ export const resetSorobanClient = (): void => {
   _client = defaultSorobanClient
 }
 
+export const getSorobanClient = (): SorobanClient => _client
 /**
  * Builds the on-chain payload for staking into a vault.
  * Mirrors the same idempotent pattern as `buildVaultCreationPayload`:

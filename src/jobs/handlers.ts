@@ -1,16 +1,8 @@
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
-import { markVaultExpiries, sendMilestoneReminders } from '../services/vaultExpiry.service.js'
-import { cleanupExpiredSessions } from '../services/session.js'
-import { buildSlashOnMissPayload } from '../services/soroban.js'
-import { relayOutboxBatch } from '../services/outboxRelay.js'
-import {
-  runReindexBatches,
-  type MilestoneEmbeddingSource,
-  type ReindexCursorStore,
-} from '../services/evidenceReindex.js'
-import type { EmbeddingProvider } from '../services/embeddingProvider.js'
+import { markVaultExpiries } from '../services/vault.js'
+import { TransactionETLService } from '../services/transactionETL.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>
@@ -91,6 +83,24 @@ export const createDefaultJobHandlers = (
       `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
     )
   },
+`  'vault.reconcile': async (payload, context) => {
+    const etlConfig = {
+      horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
+      batchSize: payload.batchSize || 50,
+      maxRetries: 3,
+    }
+    const etlService = new TransactionETLService(etlConfig)
+    const result = await etlService.reconcileVaults({
+      vaultIds: payload.vaultIds,
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'vault.reconcile',
+      `vaultIds=${payload.vaultIds?.length || 'all'} batchSize=${payload.batchSize || 50} checked=${result.checked}/${result.totalVaults} drift=${result.driftDetected} missing=${result.missingOnChain} errors=${result.errors} attempt=${context.attempt}`,
+    )
+  },
+}
   'sessions.cleanup': async (payload, context) => {
     const batchSize = payload.batchSize ?? 1000
     const deleted = await cleanupExpiredSessions(batchSize)
