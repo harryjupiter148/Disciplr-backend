@@ -270,6 +270,14 @@ systemctl restart disciplr-horizon-listener
 
 ---
 
+## Incident Response
+
+For step-by-step recovery when the listener stalls and the slash backlog builds
+up, see the dedicated runbook:
+**[Horizon Listener Stall Runbook](runbooks/horizon-stall.md)**
+
+---
+
 ## Security Notes
 
 - Listener status and cursor-reset endpoints are **admin-only**.

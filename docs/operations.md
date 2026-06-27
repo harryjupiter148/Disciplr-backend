@@ -260,3 +260,9 @@ The abuse monitor now emits structured `security.abuse_detected` events instead 
   "alertCooldownMs": 300000
 }
 ```
+
+## Runbooks
+
+| Scenario | Runbook |
+|---|---|
+| Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |
