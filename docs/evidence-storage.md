@@ -36,3 +36,15 @@ This table is created by the new database migration `db/migrations/2026052700000
 
 Audit logs do not include the raw signed URL.
 Only evidence metadata such as `evidenceHash` and the fact that evidence was attached are recorded.
+
+## Similarity Search
+
+To detect near-duplicate or low-effort submissions, evidence supports a hybrid similarity search combining vector embeddings and keyword/text matching.
+
+### Hybrid Search Implementation
+- **Vector Search (HNSW)**: The `milestone_embeddings` table uses an HNSW index on the `embedding` column with the `vector_cosine_ops` operator class.
+  - **Tradeoffs**: HNSW provides superior recall and faster query times compared to IVFFlat, though it consumes slightly more memory and index build time.
+  - **Parameters**: Built with `m = 16` and `ef_construction = 64` as standards for 768-dimensional embeddings.
+- **Keyword Search (pg_trgm)**: The `evidence_references` table is indexed with GIN indexes (`gin_trgm_ops`) on `reference_url` and `evidence_hash`.
+  - This acts as a fallback for evidence that shares few embedded features but has exactly or near-exactly matching URLs or hashes.
+- **Scoring**: A fused score is calculated as `w1 * vector_distance + w2 * keyword_distance`. Both vector and keyword use distance metrics where `0` implies an exact match.
