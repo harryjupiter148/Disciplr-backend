@@ -45,6 +45,8 @@ org-scoped endpoint must uphold.
 | `DELETE /api/organizations/:orgId/members/:userId` | `owner`, `admin`   |
 | `PATCH /api/organizations/:orgId/members/:userId/role` | `owner`        |
 | `POST /api/organizations/:orgId/invitations` | `owner`, `admin`           |
+| `POST /api/organizations/:orgId/invitations/:id/resend` | `owner`, `admin` |
+| `DELETE /api/organizations/:orgId/invitations/:id` | `owner`, `admin` |
 | `POST /api/organizations/:orgId/invitations/accept` | none (public)   |
 
 ## Middleware: `requireOrgAccess`
@@ -111,6 +113,49 @@ Response `201`:
 The `token` is returned exactly once. The caller is responsible for delivering it
 to the recipient (e.g. via email). Only the SHA-256 hash of the token is persisted.
 
+### Resend an invitation
+
+```
+POST /api/organizations/:orgId/invitations/:id/resend
+Authorization: Bearer <admin-token>
+```
+
+Response `200`:
+```json
+{
+  "id": "<uuid>",
+  "orgId": "<orgId>",
+  "email": "newuser@example.com",
+  "expiresAt": "2026-06-09T...",
+  "token": "<64-char hex token>"
+}
+```
+
+Resending is only allowed while the invitation is pending. It replaces the
+stored token hash and expiry, so the previous token is immediately invalid and
+only the newest token can be accepted. If the invitation had been revoked before
+the resend, `revoked_at` is cleared and the invitation becomes pending again.
+
+### Revoke an invitation
+
+```
+DELETE /api/organizations/:orgId/invitations/:id
+Authorization: Bearer <admin-token>
+```
+
+Response `200`:
+```json
+{
+  "id": "<uuid>",
+  "orgId": "<orgId>",
+  "email": "newuser@example.com",
+  "revokedAt": "2026-06-27T..."
+}
+```
+
+Revocation stamps `revoked_at` and prevents future acceptance. Accepted
+invitations cannot be revoked or resent and return `409 Conflict`.
+
 ### Accept an invitation
 
 ```
@@ -127,6 +172,8 @@ Response `200`:
 - Tokens expire after 7 days.
 - Each token is single-use: `accepted_at` is stamped on acceptance and the row is
   permanently consumed.
+- Revoked invitations are rejected. Resending an invitation creates a fresh token
+  and invalidates the previous token hash.
 - The comparison is constant-time to prevent timing attacks.
 
 ### Database schema: `org_invitations`
@@ -139,6 +186,8 @@ Response `200`:
 | `token_hash` | char(64) | SHA-256 hex of the raw token |
 | `expires_at` | timestamptz | 7 days from creation |
 | `accepted_at` | timestamptz | Set on acceptance; null = pending |
+| `revoked_at` | timestamptz | Set on revocation; null = not revoked |
 | `created_at` | timestamptz | Row creation time |
 
 Migration: `db/migrations/20260602120001_create_org_invitations.cjs`
+Revocation migration: `db/migrations/20260627000000_add_revoked_at_to_org_invitations.cjs`
