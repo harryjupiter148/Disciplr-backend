@@ -1,8 +1,10 @@
 import { Knex } from 'knex'
+import { CURRENT_EMBEDDING_MODEL_VERSION } from '../services/embeddingProvider.js'
 
 export interface MilestoneEmbedding {
   milestone_id: string
   embedding: number[]
+  model_version: string
   created_at: Date
   updated_at: Date
 }
@@ -10,6 +12,12 @@ export interface MilestoneEmbedding {
 export interface NearestNeighborResult {
   milestone_id: string
   distance: number
+}
+
+export interface MilestoneSummary {
+  id: string
+  title: string
+  description: string | null
 }
 
 /**
@@ -23,16 +31,20 @@ export class MilestoneRepository {
 
   /**
    * Upsert an embedding for a milestone.
-   * Replaces any existing embedding for the same milestone_id.
+   * Replaces any existing embedding (and model_version) for the same milestone_id.
    */
-  async upsertEmbedding(milestoneId: string, embedding: number[]): Promise<void> {
+  async upsertEmbedding(
+    milestoneId: string,
+    embedding: number[],
+    modelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
+  ): Promise<void> {
     const vectorLiteral = `[${embedding.join(',')}]`
     await this.db.raw(
-      `INSERT INTO milestone_embeddings (milestone_id, embedding, updated_at)
-       VALUES (:milestoneId, :vector::vector, NOW())
+      `INSERT INTO milestone_embeddings (milestone_id, embedding, model_version, updated_at)
+       VALUES (:milestoneId, :vector::vector, :modelVersion, NOW())
        ON CONFLICT (milestone_id)
-       DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = NOW()`,
-      { milestoneId, vector: vectorLiteral },
+       DO UPDATE SET embedding = EXCLUDED.embedding, model_version = EXCLUDED.model_version, updated_at = NOW()`,
+      { milestoneId, vector: vectorLiteral, modelVersion },
     )
   }
 
@@ -82,6 +94,7 @@ export class MilestoneRepository {
       .select(
         'milestone_id',
         this.db.raw('embedding::text AS embedding'),
+        'model_version',
         'created_at',
         'updated_at',
       )
@@ -100,5 +113,39 @@ export class MilestoneRepository {
    */
   async deleteEmbedding(milestoneId: string): Promise<void> {
     await this.db('milestone_embeddings').where({ milestone_id: milestoneId }).delete()
+  }
+
+  /**
+   * Page through the milestones table in stable ascending-id order. Used by
+   * the embedding reindex backfill to walk the source-of-truth table without
+   * loading it all into memory at once.
+   */
+  async listMilestonesAfter(afterId: string | null, limit: number): Promise<MilestoneSummary[]> {
+    let query = this.db('milestones')
+      .select('id', 'title', 'description')
+      .orderBy('id', 'asc')
+      .limit(limit)
+
+    if (afterId !== null) {
+      query = query.where('id', '>', afterId)
+    }
+
+    return query
+  }
+
+  /**
+   * Return the model_version of every embedding that exists among the given
+   * milestone ids. Ids absent from the returned map have no stored embedding.
+   */
+  async findEmbeddingModelVersions(milestoneIds: string[]): Promise<Map<string, string>> {
+    if (milestoneIds.length === 0) {
+      return new Map()
+    }
+
+    const rows = await this.db('milestone_embeddings')
+      .whereIn('milestone_id', milestoneIds)
+      .select('milestone_id', 'model_version')
+
+    return new Map(rows.map((row: { milestone_id: string; model_version: string }) => [row.milestone_id, row.model_version]))
   }
 }

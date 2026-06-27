@@ -7,6 +7,7 @@ export const JOB_TYPES = [
   'export.generate',
   'sessions.cleanup',
   'outbox.relay',
+  'embeddings.reindex',
 ] as const
 
 export type JobType = (typeof JOB_TYPES)[number]
@@ -50,6 +51,11 @@ export interface SessionsCleanupJobPayload {
 
 export interface OutboxRelayJobPayload {}
 
+export interface EmbeddingsReindexJobPayload {
+  batchSize?: number
+  maxBatchesPerRun?: number
+}
+
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
@@ -59,6 +65,7 @@ export interface JobPayloadByType {
   'export.generate': ExportGenerateJobPayload
   'sessions.cleanup': SessionsCleanupJobPayload
   'outbox.relay': OutboxRelayJobPayload
+  'embeddings.reindex': EmbeddingsReindexJobPayload
 }
 
 export interface JobContext {
@@ -140,6 +147,12 @@ export const isPayloadForJobType = (
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
     case 'outbox.relay':
       return true
+    case 'embeddings.reindex':
+      return (
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)) &&
+        (payload.maxBatchesPerRun === undefined ||
+          (typeof payload.maxBatchesPerRun === 'number' && payload.maxBatchesPerRun > 0))
+      )
     default:
       return false
   }

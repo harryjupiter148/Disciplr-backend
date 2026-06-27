@@ -213,4 +213,47 @@ export function getSlowQueries(limit: number = 20): SlowQuerySample[] {
   return slowQueryTracker.getSamples(limit)
 }
 
+/**
+ * Progress snapshot for the milestone-embedding reindex backfill job.
+ * Recorded after every batch so operators can observe backfill progress
+ * (and detect a stalled/backsliding cursor) without querying the DB directly.
+ */
+export interface EmbeddingReindexProgress {
+  processed: number
+  reindexed: number
+  skippedUpToDate: number
+  cursor: string | null
+  done: boolean
+  modelVersion: string
+}
+
+interface EmbeddingReindexMetrics extends EmbeddingReindexProgress {
+  recordedAt: Date
+}
+
+let lastEmbeddingReindexProgress: EmbeddingReindexMetrics | null = null
+
+/**
+ * Record progress from one reindex batch. Called by the embedding reindex
+ * job after each batch; overwrites the previous snapshot.
+ */
+export function recordEmbeddingReindexProgress(progress: EmbeddingReindexProgress): void {
+  lastEmbeddingReindexProgress = { ...progress, recordedAt: new Date() }
+}
+
+/**
+ * Get the most recently recorded embedding reindex progress, or null if the
+ * job has not run yet in this process.
+ */
+export function getEmbeddingReindexProgress(): EmbeddingReindexMetrics | null {
+  return lastEmbeddingReindexProgress
+}
+
+/**
+ * Reset the embedding reindex progress snapshot (useful for tests).
+ */
+export function resetEmbeddingReindexProgress(): void {
+  lastEmbeddingReindexProgress = null
+}
+
 export { SlowQueryTracker, PoolMetrics, DBHealthMetrics, SlowQuerySample }

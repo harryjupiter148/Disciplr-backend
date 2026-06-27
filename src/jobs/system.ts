@@ -1,4 +1,4 @@
-import { createDefaultJobHandlers } from './handlers.js'
+import { createDefaultJobHandlers, type EmbeddingReindexDependencies } from './handlers.js'
 import {
   InMemoryJobQueue,
   type QueueMetrics,
@@ -14,6 +14,9 @@ import {
 } from '../services/notifications/factory.js'
 import db from '../db/index.js'
 import { getPgPool } from '../db/pool.js'
+import { MilestoneRepository } from '../repositories/milestoneRepository.js'
+import { BackfillCursorStore } from '../services/backfillCursorStore.js'
+import { createEmbeddingProvider } from '../services/embeddingProvider.js'
 
 const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
   if (!value) {
@@ -166,7 +169,10 @@ export class BackgroundJobSystem {
   private started = false
   private shuttingDown = false
 
-  constructor(notificationService?: NotificationService) {
+  constructor(
+    notificationService?: NotificationService,
+    embeddingReindex?: EmbeddingReindexDependencies,
+  ) {
     this.queue = new InMemoryJobQueue({
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
       pollIntervalMs: parsePositiveInteger(process.env.JOB_QUEUE_POLL_INTERVAL_MS, 250),
@@ -177,7 +183,12 @@ export class BackgroundJobSystem {
 
     const resolvedNotificationService =
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
-    const handlers = createDefaultJobHandlers(resolvedNotificationService)
+    const resolvedEmbeddingReindex = embeddingReindex ?? {
+      source: new MilestoneRepository(db),
+      cursorStore: new BackfillCursorStore(db),
+      embeddingProvider: createEmbeddingProvider(),
+    }
+    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
@@ -186,6 +197,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
     this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
+    this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
   }
 
   start(): void {
@@ -280,6 +292,10 @@ export class BackgroundJobSystem {
       process.env.OUTBOX_RELAY_INTERVAL_MS,
       5_000,
     )
+    const embeddingReindexIntervalMs = parsePositiveInteger(
+      process.env.EMBEDDING_REINDEX_INTERVAL_MS,
+      600_000, // 10 minutes
+    )
 
     this.schedulerRegistry.registerJob({
       name: 'deadline.check',
@@ -320,6 +336,16 @@ export class BackgroundJobSystem {
       initialDelayMs: 1_000,
       execute: () => {
         this.enqueue('outbox.relay', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'embeddings.reindex',
+      intervalMs: embeddingReindexIntervalMs,
+      immediate: true,
+      initialDelayMs: 15_000,
+      execute: () => {
+        this.enqueue('embeddings.reindex', {})
       },
     })
   }

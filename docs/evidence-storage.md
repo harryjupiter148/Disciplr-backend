@@ -48,3 +48,11 @@ To detect near-duplicate or low-effort submissions, evidence supports a hybrid s
 - **Keyword Search (pg_trgm)**: The `evidence_references` table is indexed with GIN indexes (`gin_trgm_ops`) on `reference_url` and `evidence_hash`.
   - This acts as a fallback for evidence that shares few embedded features but has exactly or near-exactly matching URLs or hashes.
 - **Scoring**: A fused score is calculated as `w1 * vector_distance + w2 * keyword_distance`. Both vector and keyword use distance metrics where `0` implies an exact match.
+
+## Relationship to milestone embeddings
+
+This service intentionally does **not** generate or store embeddings — see "What is not stored"
+above. Similarity-search embeddings for milestones (used for near-duplicate / low-effort
+submission detection) are a separate subsystem keyed by `milestone_id`, not evidence rows, and are
+kept in sync by an offline reindex backfill job. See "Embedding reindex backfill job" in
+`docs/milestones.md` for that job's design, resumability, and rate-limiting.
