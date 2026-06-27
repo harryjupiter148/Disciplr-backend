@@ -2,6 +2,7 @@ import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
 import { markVaultExpiries } from '../services/vault.js'
+import { TransactionETLService } from '../services/transactionETL.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>
@@ -57,6 +58,23 @@ export const defaultJobHandlers: JobHandlerRegistry = {
     logJob(
       'export.generate',
       `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
+    )
+  },
+  'vault.reconcile': async (payload, context) => {
+    const etlConfig = {
+      horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
+      batchSize: payload.batchSize || 50,
+      maxRetries: 3,
+    }
+    const etlService = new TransactionETLService(etlConfig)
+    const result = await etlService.reconcileVaults({
+      vaultIds: payload.vaultIds,
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'vault.reconcile',
+      `vaultIds=${payload.vaultIds?.length || 'all'} batchSize=${payload.batchSize || 50} checked=${result.checked}/${result.totalVaults} drift=${result.driftDetected} missing=${result.missingOnChain} errors=${result.errors} attempt=${context.attempt}`,
     )
   },
 }

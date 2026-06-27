@@ -193,6 +193,20 @@ export function __resetSecurityMonitorForTests(): void {
   processedEvents = 0
 }
 
+// ─── Vault drift anomaly logging ───────────────────────────────────────────
+
+type VaultDriftEventType =
+  | 'vault_missing_onchain'
+  | 'vault_state_drift'
+  | 'vault_reconciliation_error'
+
+export function logVaultDriftAnomaly(
+  event: VaultDriftEventType,
+  data: Record<string, unknown>,
+): void {
+  logSecurityEvent(`vault.${event}`, data)
+}
+
 function getIpState(ip: string, now: number): IpState {
   const existing = ipStates.get(ip)
   if (existing) {
