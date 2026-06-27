@@ -167,3 +167,95 @@ export async function createEvidenceReference(
     createdAt: row.created_at.toISOString(),
   }
 }
+
+export interface SimilarEvidenceResult {
+  milestoneId: string
+  evidenceHash: string
+  referenceUrl: string
+  vectorDistance: number
+  keywordDistance: number
+  fusedScore: number
+}
+
+export interface FindSimilarOptions {
+  limit?: number
+  vectorWeight?: number
+  keywordWeight?: number
+}
+
+export async function findSimilar(
+  milestoneId: string,
+  options: FindSimilarOptions = {},
+): Promise<SimilarEvidenceResult[]> {
+  const limit = options.limit ?? 5
+  const vectorWeight = options.vectorWeight ?? 0.5
+  const keywordWeight = options.keywordWeight ?? 0.5
+
+  // Fetch the query milestone's embedding and evidence text
+  const queryRows = await prisma.$queryRaw<
+    Array<{
+      embedding: string
+      reference_url: string
+      evidence_hash: string
+    }>
+  >`
+    SELECT
+      me.embedding::text AS embedding,
+      er.reference_url,
+      er.evidence_hash
+    FROM milestone_embeddings me
+    JOIN verifications v ON v.target_id = me.milestone_id
+    JOIN evidence_references er ON er.verification_id = v.id
+    WHERE me.milestone_id = ${milestoneId}
+    LIMIT 1
+  `
+
+  const queryRow = queryRows[0]
+  if (!queryRow) {
+    return []
+  }
+
+  // We cast to vector explicitly here and calculate distances.
+  const results = await prisma.$queryRaw<
+    Array<{
+      milestone_id: string
+      evidence_hash: string
+      reference_url: string
+      vector_distance: number
+      keyword_distance: number
+      fused_score: number
+    }>
+  >`
+    SELECT
+      me.milestone_id,
+      er.evidence_hash,
+      er.reference_url,
+      (me.embedding <=> ${queryRow.embedding}::vector) AS vector_distance,
+      LEAST(
+        (er.reference_url <-> ${queryRow.reference_url}),
+        (er.evidence_hash <-> ${queryRow.evidence_hash})
+      ) AS keyword_distance,
+      (
+        ((me.embedding <=> ${queryRow.embedding}::vector) * ${vectorWeight}) +
+        (LEAST(
+          (er.reference_url <-> ${queryRow.reference_url}),
+          (er.evidence_hash <-> ${queryRow.evidence_hash})
+        ) * ${keywordWeight})
+      ) AS fused_score
+    FROM milestone_embeddings me
+    JOIN verifications v ON v.target_id = me.milestone_id
+    JOIN evidence_references er ON er.verification_id = v.id
+    WHERE me.milestone_id != ${milestoneId}
+    ORDER BY fused_score ASC
+    LIMIT ${limit}
+  `
+
+  return results.map((r) => ({
+    milestoneId: r.milestone_id,
+    evidenceHash: r.evidence_hash,
+    referenceUrl: r.reference_url,
+    vectorDistance: Number(r.vector_distance),
+    keywordDistance: Number(r.keyword_distance),
+    fusedScore: Number(r.fused_score),
+  }))
+}
