@@ -11,6 +11,7 @@ import {
   getIdempotentResponse,
   hashRequestPayload,
   saveIdempotentResponse,
+  failPendingIdempotentResponse,
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
@@ -81,7 +82,12 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
       }
     } catch (err) {
       if (err instanceof IdempotencyConflictError) {
-        res.status(409).json({ error: err.message })
+        res.status(409).json({
+          error: {
+            code: 'IDEMPOTENCY_CONFLICT',
+            message: err.message,
+          },
+        })
         return
       }
       throw err
@@ -137,6 +143,10 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     updateAnalyticsSummary()
     res.status(201).json(responseBody)
   } catch (error) {
+    if (idempotencyKey) {
+      failPendingIdempotentResponse(idempotencyKey, requestHash, error)
+    }
+
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }

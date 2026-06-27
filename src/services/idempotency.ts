@@ -9,16 +9,65 @@ export class IdempotencyConflictError extends Error {
   }
 }
 
+type StoredIdempotencyEntry = {
+  hash: string
+  response: unknown
+  expiresAt: number
+}
+
+type PendingIdempotencyRequest = {
+  hash: string
+  promise: Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (reason?: unknown) => void
+}
+
 // In-memory store for idempotent responses (replaces DB for now)
-const idempotencyStore = new Map<string, { hash: string; response: unknown }>()
+const idempotencyStore = new Map<string, StoredIdempotencyEntry>()
+const pendingIdempotencyRequests = new Map<string, PendingIdempotencyRequest>()
+let idempotencyTtlMs = Number(process.env.IDEMPOTENCY_TTL_MS ?? 60 * 60 * 1000)
 
 export function hashRequestPayload(body: unknown): string {
   return createHash('sha256').update(JSON.stringify(body)).digest('hex')
 }
 
+function pruneExpiredEntries(now = Date.now()): void {
+  for (const [key, entry] of idempotencyStore.entries()) {
+    if (entry.expiresAt <= now) {
+      idempotencyStore.delete(key)
+    }
+  }
+}
+
+export function setIdempotencyTtlMs(ttlMs: number): void {
+  idempotencyTtlMs = ttlMs
+}
+
 export async function getIdempotentResponse<T>(key: string, hash: string): Promise<T | null> {
+  pruneExpiredEntries()
+
+  const pending = pendingIdempotencyRequests.get(key)
+  if (pending) {
+    if (pending.hash !== hash) {
+      throw new IdempotencyConflictError()
+    }
+
+    return pending.promise as Promise<T>
+  }
+
   const entry = idempotencyStore.get(key)
-  if (!entry) return null
+  if (!entry) {
+    let resolve!: (value: unknown) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<unknown>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+
+    pendingIdempotencyRequests.set(key, { hash, promise, resolve, reject })
+    return null
+  }
+
   if (entry.hash !== hash) throw new IdempotencyConflictError()
   return entry.response as T
 }
@@ -29,11 +78,30 @@ export async function saveIdempotentResponse(
   _id: string,
   response: unknown
 ): Promise<void> {
-  idempotencyStore.set(key, { hash, response })
+  pruneExpiredEntries()
+
+  const pending = pendingIdempotencyRequests.get(key)
+  if (pending) {
+    pendingIdempotencyRequests.delete(key)
+    pending.resolve(response)
+  }
+
+  idempotencyStore.set(key, { hash, response, expiresAt: Date.now() + idempotencyTtlMs })
+}
+
+export function failPendingIdempotentResponse(key: string, hash: string, error: unknown): void {
+  const pending = pendingIdempotencyRequests.get(key)
+  if (!pending || pending.hash !== hash) {
+    return
+  }
+
+  pendingIdempotencyRequests.delete(key)
+  pending.reject(error)
 }
 
 export function resetIdempotencyStore(): void {
   idempotencyStore.clear()
+  pendingIdempotencyRequests.clear()
 }
 
 /**
