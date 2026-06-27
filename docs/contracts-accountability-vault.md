@@ -14,3 +14,7 @@ Notes for backend developers:
 - `src/services/soroban.ts` builds the call args expecting `vaultId` first.
 - `src/services/eventParser.ts` validates that incoming events include a
   `vaultId`/`vault_id` string that matches UUID format.
+
+## Upgrading the Contract
+
+For instructions on safely upgrading the accountability vault contract and migrating storage, see the [Contract Upgrade & Storage Migration Runbook](./runbooks/contract-upgrade.md).
