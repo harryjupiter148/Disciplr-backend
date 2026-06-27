@@ -74,7 +74,7 @@ function findKeyByKid(keys: JwtKey[], kid: string): JwtKey {
 }
 
 // --------------- JWT Generation ---------------
-export const generateAccessToken = (payload: { userId: string; role: string; jti?: string }, env?: Env): string => {
+export const generateAccessToken = (payload: { userId: string; role: string; jti?: string; impersonator?: string }, env?: Env): string => {
   let keys: JwtKey[] = [];
   try {
     const resolvedEnv = env || getEnv();
@@ -92,8 +92,9 @@ export const generateAccessToken = (payload: { userId: string; role: string; jti
       role: payload.role,
       userId: payload.userId,
       ...(payload.jti && { jti: payload.jti }),
+      ...(payload.impersonator && { impersonator: payload.impersonator }),
     }, ACCESS_SECRET, {
-      expiresIn: (process.env.JWT_ACCESS_EXPIRES_IN || '15m') as any,
+      expiresIn: (process.env.JWT_IMPERSONATION_EXPIRES_IN || '15m') as any,
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
     });
@@ -104,13 +105,23 @@ export const generateAccessToken = (payload: { userId: string; role: string; jti
     role: payload.role,
     userId: payload.userId,
     ...(payload.jti && { jti: payload.jti }),
+    ...(payload.impersonator && { impersonator: payload.impersonator }),
   };
   return jwt.sign(fullPayload, currentKey.secret, {
-    expiresIn: (process.env.JWT_ACCESS_EXPIRES_IN || '15m') as any,
+    expiresIn: (process.env.JWT_IMPERSONATION_EXPIRES_IN || '15m') as any,
     issuer: JWT_ISSUER,
     audience: JWT_AUDIENCE,
     header: { kid: currentKey.kid },
   });
+};
+
+export const generateImpersonationToken = (impersonatorId: string, targetUserId: string, targetRole: string, env?: Env): string => {
+  return generateAccessToken({
+    userId: targetUserId,
+    role: targetRole,
+    impersonator: impersonatorId,
+    jti: randomUUID(),
+  }, env);
 };
 
 export const generateRefreshToken = (payload: { userId: string }, env?: Env): string => {
@@ -155,14 +166,14 @@ export const verifyAccessToken = (token: string, env?: Env) => {
       clockTolerance: 30,
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
-    }) as { userId: string; role: string; jti?: string; sub?: string };
+    }) as { userId: string; role: string; jti?: string; sub?: string; impersonator?: string };
   }
   // Fallback to legacy secret
   return jwt.verify(token, ACCESS_SECRET, {
     clockTolerance: 30,
     issuer: JWT_ISSUER,
     audience: JWT_AUDIENCE,
-  }) as { userId: string; role: string; jti?: string; sub?: string };
+  }) as { userId: string; role: string; jti?: string; sub?: string; impersonator?: string };
 };
 
 export const verifyRefreshToken = (token: string, env?: Env) => {

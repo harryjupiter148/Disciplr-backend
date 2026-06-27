@@ -3,7 +3,6 @@ import { requireAdmin } from '../middleware/rbac.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
-import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService, DeleteResult } from '../services/user.service.js'
 import { forceRevokeUserSessions } from '../services/session.js'
@@ -28,6 +27,10 @@ import { db } from '../db/knex.js'
 import { getAbuseCategoryCounts } from '../security/abuse-monitor.js'
 import { CheckpointStore } from '../services/checkpointStore.js'
 import { getLatestListenerLag } from '../services/monitor.js'
+import { generateImpersonationToken } from '../lib/auth-utils.js'
+import { getPrisma } from '../lib/prismaScope.js'
+import { recordSession } from '../services/session.js'
+import { randomUUID } from 'node:crypto'
 
 export const adminRouter = Router()
 
@@ -766,4 +769,69 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
  */
 adminRouter.get('/abuse/category-counts', (req: Request, res: Response) => {
   res.status(200).json({ data: getAbuseCategoryCounts() })
+})
+
+// Admin impersonation endpoint - issues a short-lived token impersonating another user
+adminRouter.post('/impersonate/:userId', requireStepUp(), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const targetUserId = req.params.userId
+    const targetUser = await getPrisma().user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true }
+    })
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const jti = randomUUID()
+    const expiresIn = process.env.JWT_IMPERSONATION_EXPIRES_IN || '15m'
+    let expiresAtMs: number
+    if (expiresIn.endsWith('m')) {
+      expiresAtMs = parseInt(expiresIn.slice(0, -1)) * 60 * 1000
+    } else if (expiresIn.endsWith('h')) {
+      expiresAtMs = parseInt(expiresIn.slice(0, -1)) * 60 * 60 * 1000
+    } else if (expiresIn.endsWith('s')) {
+      expiresAtMs = parseInt(expiresIn.slice(0, -1)) * 1000
+    } else if (expiresIn.endsWith('d')) {
+      expiresAtMs = parseInt(expiresIn.slice(0, -1)) * 24 * 60 * 60 * 1000
+    } else {
+      expiresAtMs = 15 * 60 * 1000 // default 15 minutes
+    }
+
+    const expiresAt = new Date(Date.now() + expiresAtMs)
+    await recordSession(targetUserId, jti, expiresAt)
+
+    const impersonationToken = generateImpersonationToken(
+      req.user.userId,
+      targetUserId,
+      targetUser.role
+    )
+
+    // Audit log - impersonation started
+    await createAuditLog({
+      actor_user_id: req.user.userId,
+      action: 'impersonation.start',
+      target_type: 'user',
+      target_id: targetUserId,
+      metadata: {
+        impersonator: req.user.userId,
+        impersonated_user: targetUserId,
+        token_expires_at: expiresAt.toISOString()
+      }
+    })
+
+    res.status(200).json({
+      accessToken: impersonationToken,
+      expiresAt: expiresAt.toISOString(),
+      userId: targetUserId,
+      role: targetUser.role
+    })
+  } catch (error: any) {
+    next(error)
+  }
 })

@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { randomUUID } from 'node:crypto'
 import { recordSession, validateSession } from '../services/session.js'
 import { UserRole } from '../types/user.js'
+import { verifyAccessToken } from '../lib/auth-utils.js'
 
 import { JWTPayload } from '../types/auth.js'
 
@@ -25,7 +26,14 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
      const token = authHeader.slice(7)
 
      try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          // First try verifyAccessToken from lib/auth-utils.ts (which uses JWT_ACCESS_SECRET)
+          let payload: JwtPayload
+          try {
+               payload = verifyAccessToken(token) as JwtPayload
+          } catch {
+               // Fallback to legacy JWT_SECRET for backward compatibility
+               payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          }
 
           // Reject tokens with iat too far in the future (beyond clock tolerance)
           const iat = (payload as any).iat as number | undefined
@@ -79,6 +87,11 @@ export function requireAdmin(
 ): void {
     if (!req.user) {
         res.status(401).json({ error: 'Unauthorized: Authentication required' })
+        return
+    }
+    // Block impersonation tokens from accessing admin endpoints
+    if (req.user.impersonator) {
+        res.status(403).json({ error: 'Forbidden: Impersonation tokens cannot access admin endpoints' })
         return
     }
     if (req.user.role !== 'ADMIN') {
