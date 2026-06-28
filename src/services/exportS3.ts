@@ -72,9 +72,10 @@ export async function uploadToS3(config: S3Config, key: string, data: Buffer | R
 /**
  * Return a pre-signed GET URL valid for `ttlSeconds`.
  */
-export async function getExportSignedUrl(config: S3Config, key: string): Promise<string> {
+export async function getExportSignedUrl(config: S3Config, key: string, overrideTtlSeconds?: number): Promise<string> {
   const client = _clientFactory(config.region)
   return _presigner(client, new GetObjectCommand({ Bucket: config.bucket, Key: key }), {
-    expiresIn: config.signedUrlTtlSeconds,
+    expiresIn: overrideTtlSeconds ?? config.signedUrlTtlSeconds,
   })
 }
+
